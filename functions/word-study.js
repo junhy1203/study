@@ -108,7 +108,9 @@ export const syncWordStudy = onCall(options, async request => {
     if(tracking&&present&&profile?.activeSessionId!==sessionId&&!linkedCamera)throw new HttpsError('failed-precondition','얼굴인식 일시정지 확인을 먼저 완료해 주세요.');
     const activityRoom=await readActivityRoom(tx,db,uid,profile);
     const counting=tracking&&present;
-    const cameraId=cameraRef?interruptCamera(tx,cameraRef,camera,sessionId,now,counting):null;
+    // Keep camera ownership paused while the word app is present, including
+    // question transitions and short inactivity. Credit still uses its own lease.
+    const cameraId=cameraRef?interruptCamera(tx,cameraRef,camera,sessionId,now,present):null;
     const presenceUntilMs=present?now.toMillis()+WORD_PRESENCE_MS:now.toMillis();
     const update = {...checkpointCamera({...session,startedAtMs:session.startedAt.toMillis()},now.toMillis(),tracking&&present,WORD_LEASE_MS),presenceUntilMs};
     publishWordRoom(tx,activityRoom,uid,profile,{...session,...update},now.toMillis(),present,camera);
@@ -116,7 +118,7 @@ export const syncWordStudy = onCall(options, async request => {
     update.settledSegments=update.segments;
     tx.update(ref,{...update,sequence,updatedAt:now});
     const wordSnapshot={sessionId,subjectId:session.subjectId,segments:update.segments,activeSinceMs:update.activeSinceMs,leaseUntilMs:update.leaseUntilMs,serverNowMs:now.toMillis()};
-    tx.update(db.doc(`users/${uid}`),{wordStudySessionId:sessionId,wordCameraSessionId:cameraId,wordPresenceUntilMs:counting?update.leaseUntilMs:null,wordAppUntilMs:presenceUntilMs,wordTracking:counting,wordSnapshot,...(delta>0?{studyRevision:FieldValue.increment(1),wordCheckpointRevision:FieldValue.increment(1)}:{}),updatedAt:now});
+    tx.update(db.doc(`users/${uid}`),{wordStudySessionId:sessionId,wordCameraSessionId:cameraId,wordPresenceUntilMs:present?presenceUntilMs:null,wordAppUntilMs:presenceUntilMs,wordTracking:counting,wordSnapshot,...(delta>0?{studyRevision:FieldValue.increment(1),wordCheckpointRevision:FieldValue.increment(1)}:{}),updatedAt:now});
     tx.set(db.doc(`wordStudyLeases/${sessionId}`),{uid,sessionId,expiresAtMs:presenceUntilMs});
     return reply(ref.id,{...session,...update,sequence},now);
   });

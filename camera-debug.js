@@ -1,16 +1,20 @@
-const LABELS = { sleep: '수면·졸음', phone: '휴대폰', away: '자리 이탈', idle: '멍때림 추정', identity: '본인 얼굴 유사도' };
+const LABELS = { sleep: '수면·졸음', phone: '휴대폰', away: '자리 이탈', idle: '멍때림 추정', identity: '본인 인증' };
 const seconds = ms => `${(Math.max(0, ms) / 1000).toFixed(ms > 0 && ms < 1000 ? 2 : 1)}초`;
 let dialogSequence=0;
 
 export function focusDebugRows(debug) {
   return Object.entries(LABELS).map(([key, label]) => {
+    if(!debug)return {key,label,text:'분석 대기',active:false};
     if(key==='identity'){
       const identity=debug?.identity;
       const threshold=identity?.threshold??.8;
       const text=Number.isFinite(identity?.score)?`비교 점수 ${identity.score.toFixed(3)} · 기준 ${threshold.toFixed(3)} · ${identity.matched?'일치':'확인 중'} (본인 확률 아님)`:
         !identity?'분석 대기':identity.enrolled===false||identity.status==='enrolling'?'얼굴 등록 중 · 점수 대기':
         identity.status==='missing'?'얼굴 미감지 · 점수 없음':identity.status==='multiple'?'여러 얼굴 감지 · 점수 없음':'얼굴 비교 중 · 점수 대기';
-      return {key,label,text,active:Number.isFinite(identity?.score)};
+      const recognized=debug?.verification?.recognizedSeconds;
+      const recognizedText=Number.isFinite(recognized)?`최근 1분 30초 본인 인정 ${Math.max(0,Math.min(90,recognized)).toFixed(1)}초 · 입장·자리 복귀 시 인증`:'본인 인증 · 분석 대기';
+      const meshText=Number.isFinite(identity?.meshScore)?` · 영상 추정 3D 형태 ${(identity.meshScore*100).toFixed(1)}% · 기준 ${((identity.meshThreshold??.5)*100).toFixed(0)}%`:'';
+      return {key,label,text:`${recognizedText} · ${text}${meshText}`,active:Number.isFinite(identity?.score)||Boolean(identity)&&Number.isFinite(recognized)};
     }
     const row = debug?.rows.find(row => row.key === key);
     if (!row) return { key, label, text: '분석 대기', active: false };

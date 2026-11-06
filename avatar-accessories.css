@@ -1,0 +1,12 @@
+.pixel-accessory{width:94px;height:78px;overflow:visible}
+.avatar-tier-items .pixel-accessory{max-width:100%;align-self:center}
+.avatar-accessory-float{animation:accessory-hover 3.4s ease-in-out infinite;transform-origin:center}
+.avatar-accessory-art.is-mythic{animation:accessory-rainbow 9s linear infinite;filter:drop-shadow(0 0 .4px #f7c6ff)}
+.avatar-accessory-sparkle{animation:accessory-sparkle 3s ease-in-out var(--delay,0s) infinite}
+.room-accessory{transition:transform var(--accessory-follow-duration,600ms) cubic-bezier(.2,.7,.25,1) 60ms;will-change:transform}
+.room-accessory>.pixel-accessory{width:34px;height:38px;max-width:none;pointer-events:none}
+@keyframes accessory-hover{0%,100%{transform:translateY(-.65px) rotate(-3deg)}50%{transform:translateY(.65px) rotate(3deg)}}
+@keyframes accessory-rainbow{to{filter:hue-rotate(360deg) drop-shadow(0 0 .4px #f7c6ff)}}
+@keyframes accessory-sparkle{0%,100%{opacity:.4}50%{opacity:1}}
+@media(max-width:480px){.avatar-tier-items .pixel-accessory{width:82px;height:66px}}
+@media(prefers-reduced-motion:reduce){.avatar-accessory-float,.avatar-accessory-art.is-mythic,.avatar-accessory-sparkle{animation:none!important}.room-accessory{transition:none}}

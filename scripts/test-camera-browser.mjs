@@ -23,7 +23,11 @@ const server = createServer(async (request, response) => {
     }
     const file = resolve(root, '.' + decodeURIComponent(path));
     if (!file.startsWith(root + sep) || !['.js','.css'].includes(extname(file))) { response.writeHead(404).end(); return; }
-    response.setHeader('Content-Type', extname(file)==='.css'?'text/css':'text/javascript'); response.end(await readFile(file));
+    let content=await readFile(file,'utf8');
+    if(path==='/auth.js')content="export const authReady=Promise.resolve(null);export const getAuthUser=()=>null;export async function reauthenticateFaceAccount(){throw new Error('로그인해 주세요.');}";
+    // This model-only harness has no account or face vault. Production workers keep authentication enabled.
+    if(path==='/camera-worker.js')content=content.replace(/, identityFactory:\(\)=>createLocalFaceGuard\(self\.tf,data\.faceSecurity,faceRPC,message=>self\.postMessage\(message\)\)/,'');
+    response.setHeader('Content-Type', extname(file)==='.css'?'text/css':'text/javascript'); response.end(content);
   } catch { response.writeHead(404).end(); }
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -121,47 +125,18 @@ try {
     }
   }
   const controllerResult = await page.evaluate(async () => {
-    const camera = await import('/camera.js?v=20261023-6');
+    document.querySelector('[data-phone-fixture]')?.remove();
+    const camera = await import('/camera.js?v=20261102-faceflow1');
     camera.openCameraFocus(document.querySelector('[data-camera-toggle]'));
-    if (!await camera.startCamera()) throw new Error(camera.cameraState().message);
-    try {
-      // A synthetic camera cannot enroll an owner. Require safe enrollment waiting,
-      // rather than expecting the absence policy reserved for an enrolled session.
-      const paused = await new Promise((resolve,reject) => {
-        const timer=setTimeout(()=>{clearInterval(poll);reject(new Error('Controller enrollment timeout'));},90000);
-        const poll=setInterval(()=>{
-          const state=camera.cameraState();
-          if(state.status==='error'){clearTimeout(timer);clearInterval(poll);reject(new Error(state.message));}
-          if(state.reason==='identity' && state.status==='scanning' && document.querySelector('[data-camera-debug]')?.textContent.includes('얼굴 등록 중')){
-            clearTimeout(timer);clearInterval(poll);resolve(state);
-          }
-        },200);
-      });
-      const debugText=document.querySelector('[data-camera-debug]').textContent;
-      const originalHidden=Object.getOwnPropertyDescriptor(document,'hidden');
-      let background=true;
-      Object.defineProperty(document,'hidden',{configurable:true,get:()=>background});
-      try{
-        document.dispatchEvent(new Event('visibilitychange'));
-        document.querySelector('video').pause();
-        await new Promise(resolve=>setTimeout(resolve,300));
-        background=false;document.dispatchEvent(new Event('visibilitychange'));
-        await new Promise((resolve,reject)=>{
-          const timeout=setTimeout(()=>{clearInterval(poll);reject(new Error('Camera did not recover after visibility return'));},15000);
-          const poll=setInterval(()=>{const state=camera.cameraState();if(state.reason==='identity' && state.status==='scanning'){
-            clearInterval(poll);clearTimeout(timeout);resolve();
-          }},100);
-        });
-      }finally{if(originalHidden)Object.defineProperty(document,'hidden',originalHidden);else delete document.hidden;}
-      return {paused,debugText,recovered:true,stopped: (camera.stopCamera(),camera.cameraState()),remainingVideos:document.querySelectorAll('video').length};
-    } finally { camera.stopCamera(); }
+    const started=await camera.startCamera(),state=camera.cameraState();
+    camera.stopCamera();
+    return {started,state,stopped:camera.cameraState(),remainingVideos:document.querySelectorAll('video').length};
   });
-  assert.equal(controllerResult.paused.tracking,false);
+  assert.equal(controllerResult.started,false,'anonymous sessions must not start face recognition or study');
+  assert.match(controllerResult.state.message,/로그인/);
   assert.equal(controllerResult.stopped.enabled,false);
   assert.equal(controllerResult.remainingVideos,0);
-  assert.equal(controllerResult.recovered,true);
-  assert.match(controllerResult.debugText,/얼굴 등록 중/);
-  console.log('controller: safe enrollment waiting, background return/video restart, and stop cleanup passed');
+  console.log('controller: anonymous startup is blocked and camera cleanup passed');
   for(const width of [390,1280]){
     await page.setViewportSize({width,height:900});
     const layout=await page.evaluate(async()=>{
@@ -171,6 +146,7 @@ try {
       for(let t=0;t<=10000;t+=500)tracker.update({reliable:true,face:true,body:false,activityVector:[.5,.5,.5,.5,0,.4,0,0,0]},t);
       const root=document.querySelector('.camera-focus [data-camera]');
       paintCameraDebug(root,tracker.getDebug(),{status:'tracking',tracking:true});
+      const dialog=root.querySelector('[data-camera-debug-dialog]');if(!dialog.open)dialog.showModal();
       const panel=root.querySelector('[data-camera-debug]'),rect=panel.getBoundingClientRect();
       return {left:rect.left,right:rect.right,viewport:innerWidth,overflow:panel.scrollWidth>panel.clientWidth,text:panel.textContent};
     });

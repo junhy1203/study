@@ -21,6 +21,7 @@ export async function changePlan(db, uid, action, input, now = Date.now()) {
         update.subjects = [...subjects,subject];result = {subject};
       } else if (action === 'removeSubject') {
         if (!input?.id || input.id === 'other') throw new Error('기타 과목은 삭제할 수 없습니다.');
+        if ((profile.subjects || []).some(row=>row.id===input.id&&row.name==='영단어')) throw new Error('영단어는 연동 필수 과목으로 삭제할 수 없습니다.');
         if (profile.activeSessionId) throw new Error('학습을 종료한 뒤 과목을 삭제해 주세요.');
         if ((profile.goals || []).some(goal => goal.subjectId === input.id)) throw new Error('이 과목의 목표를 먼저 삭제해 주세요.');
         update.subjects = (profile.subjects || []).filter(row => row.id !== input.id);result = {removed:true};

@@ -1,8 +1,8 @@
-import { authReady, getAuthUser } from './auth.js?v=20261022-1';
-import { getStudyData } from './data.js?v=20261025-8';
-import { serverCallable } from './server-client.js?v=20261024-selfhost1';
+import { authReady, getAuthUser } from './auth.js?v=20261104-1';
+import { getStudyData } from './data.js?v=20261105-shop10';
+import { serverCallable } from './server-client.js?v=20261103-privateui1';
 import { chatHistory, completedAnswer } from './chat-state.js?v=20261021-28';
-import { readCache } from './client-cache.js?v=20261024-selfhost1';
+import { readCache } from './client-cache.js?v=20261105-shop10';
 import { briefingPeriod } from './functions/briefing-period.js?v=20261022-11';
 import { renderCalendar } from './school-calendar.js?v=20261022-12';
 

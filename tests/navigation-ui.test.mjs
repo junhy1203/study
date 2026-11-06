@@ -7,7 +7,7 @@ const source=await readFile(new URL('../navigation.js',import.meta.url),'utf8');
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 
 test('every navigation includes AI between study and school and home has no AI promo',async()=>{
-  for(const page of ['index','study','school','play','account','ai']) {
+  for(const page of ['index','study','school','play','account','ai','friends']) {
     const html=await readFile(new URL(`../${page}.html`,import.meta.url),'utf8');
     const nav=html.match(/<nav class="bottom-nav"[^>]*>(.*?)<\/nav>/s)?.[1];
     assert.ok(nav,`${page} navigation`);

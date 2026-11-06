@@ -1,0 +1,32 @@
+.avatar-cinematic-scene{pointer-events:none}
+.cinematic-wing{transform-origin:9px 14px;animation:cinematic-wings 5.5s ease-in-out infinite alternate}
+.cinematic-wing-right{animation-direction:alternate-reverse}
+.cinematic-rays{transform-origin:9px 10px;animation:cinematic-rays 10s ease-in-out infinite alternate}
+.cinematic-floor{transform-origin:9px 24px;animation:cinematic-floor 5s ease-in-out infinite alternate}
+.cinematic-star{animation:cinematic-stars 3.6s ease-in-out var(--scene-delay,0s) infinite}
+.cinematic-firework{animation:cinematic-bloom 6s ease-out var(--scene-delay,0s) infinite;transform-origin:0 0}
+.cinematic-meteor{animation:cinematic-meteor var(--scene-duration,4s) linear var(--scene-delay,0s) infinite}
+.cinematic-portal{transform-origin:9px 8px;animation:cinematic-portal 32s linear infinite}
+.cinematic-palace{animation:cinematic-palace 5s ease-in-out infinite alternate}
+@keyframes cinematic-wings{from{transform:scaleX(.94) rotate(-2deg)}to{transform:scaleX(1.03) rotate(2deg)}}
+@keyframes cinematic-rays{from{opacity:.55;transform:rotate(-7deg)}to{opacity:1;transform:rotate(7deg)}}
+@keyframes cinematic-floor{to{opacity:.5;transform:scaleX(.91)}}
+@keyframes cinematic-stars{0%,100%{opacity:.4}50%{opacity:1}}
+@keyframes cinematic-bloom{0%{opacity:.3;transform:scale(.35) rotate(-8deg)}25%,50%{opacity:1;transform:scale(.9) rotate(0)}85%,100%{opacity:.25;transform:scale(1) rotate(8deg)}}
+@keyframes cinematic-meteor{0%{opacity:0;transform:translate(-1px,-1.5px)}20%,65%{opacity:1}100%{opacity:0;transform:translate(3px,6px)}}
+@keyframes cinematic-portal{to{transform:rotate(360deg)}}
+@keyframes cinematic-palace{to{opacity:.7;transform:translateY(-.5px)}}
+.avatar-selected-preview .pixel-avatar[data-cinematic-effect]{width:200px;max-width:100%;height:170px}
+.play-profile [data-avatar-preview] .pixel-avatar[data-cinematic-effect]{width:300px;max-width:100%;height:260px}
+.avatar-shop-card[data-cinematic-item] .pixel-avatar{cursor:zoom-in;background:radial-gradient(ellipse,#be9cff24,transparent 70%);border-radius:12px}
+.avatar-shop-card[data-cinematic-item] .avatar-rarity::after{content:' · 확대 ↗';font-weight:500;letter-spacing:0}
+.avatar-shop-card[data-cinematic-item] .pixel-avatar:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+.avatar-cinematic-dialog{width:min(620px,calc(100vw - 24px));padding:24px;border:1px solid #c5a9e9;border-radius:24px;background:var(--paper);color:var(--text);text-align:center;max-height:calc(100dvh - 24px);overflow:auto}
+.avatar-cinematic-dialog::backdrop{background:#121024a8;backdrop-filter:blur(4px)}
+.avatar-cinematic-dialog h2{margin:0 0 16px;font-size:22px}
+.avatar-cinematic-stage{display:grid;place-items:center;min-height:320px;border-radius:20px;background:radial-gradient(ellipse at 50% 65%,#4c3873,#15192d 75%);overflow:hidden}
+.avatar-cinematic-stage .pixel-avatar{width:100%;max-width:520px;height:360px}
+.avatar-cinematic-price{display:block;margin:16px 0;font-size:19px;font-weight:800}
+.avatar-cinematic-dialog button{width:100%;min-height:44px}
+@media(max-width:480px){.avatar-cinematic-dialog{padding:16px}.avatar-cinematic-stage{min-height:260px}.avatar-cinematic-stage .pixel-avatar{height:290px}.avatar-cinematic-dialog h2{font-size:19px}}
+@media(prefers-reduced-motion:reduce){.avatar-cinematic-scene *{animation:none!important}}

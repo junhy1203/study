@@ -23,7 +23,7 @@
   }
 
   function isSheet(url) {
-    return isAI(url) || isAccount(url);
+    return isAI(url) || isAccount(url) || url.pathname.split('/').pop() === 'friends.html';
   }
 
   function cancelNavigation() {
@@ -185,6 +185,7 @@
   });
 
   document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && displayedUrl.pathname.endsWith('/friends.html') && !document.querySelector('dialog[open]')) document.querySelector('[aria-label="친구 화면 닫기"]')?.click();
     if (event.key === 'Escape' && isAI(displayedUrl)) {
       document.querySelector('[data-ai-close]')?.click();
     }

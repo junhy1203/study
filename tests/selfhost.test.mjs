@@ -87,6 +87,30 @@ test('HTTP rejects unauthenticated, foreign-origin and cross-user private reads'
   assert.equal((await post('/api/v1/rpc/cleanupIdleStudyRooms','alice',{data:{}})).status,404);
   assert.equal((await post('/api/v1/read','alice',{kind:'doc',path:'wordAccountLinks/secret'})).status,403);
 });
+test('batched reads preserve ownership, query bounds, item order and per-item errors',async()=>{
+  const ref=db.doc('users/alice/dailyStats/2099-01-01');await ref.set({totalSeconds:7});
+  try{
+    const response=await post('/api/v1/read-batch','alice',{reads:[{kind:'doc',path:ref.path},{kind:'doc',path:'users/bob'},{kind:'query',path:'users/alice/sessions',limit:51}]});
+    assert.equal(response.status,200);assert.match(response.headers.get('content-type'),/ndjson/);
+    const rows=(await response.text()).trim().split('\n').map(line=>JSON.parse(line)).sort((a,b)=>a.index-b.index);
+    assert.equal(rows[0].value.data.totalSeconds,7);assert.equal(rows[1].error.code,'permission-denied');assert.equal(rows[2].error.code,'invalid-argument');
+    assert.equal((await post('/api/v1/read-batch','alice',{reads:Array(17).fill({kind:'doc',path:ref.path})})).status,400);
+    assert.equal((await post('/api/v1/read-batch','bad',{reads:[{kind:'doc',path:ref.path}]})).status,401);
+  }finally{await ref.delete();}
+});
+test('batched HTTP reads stream a fast result without waiting for a slow result',async()=>{
+  let release,verified=0;
+  const blocked=new Promise(resolve=>{release=resolve;});
+  const fake={setMaxListeners(){},doc:path=>({path,get:async()=>{if(path.endsWith('/slow'))await blocked;return {id:path.split('/').at(-1),exists:true,data:()=>({totalSeconds:7})};}})};
+  const isolated=createApi({db:fake,allowedOrigins:['https://study.junhyuk.site'],callables:{},verifyToken:async()=>{verified++;return identity('alice');}});
+  await new Promise(resolve=>isolated.server.listen(0,'127.0.0.1',resolve));const controller=new AbortController();
+  try{
+    const response=await fetch(`http://127.0.0.1:${isolated.server.address().port}/api/v1/read-batch`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer alice'},body:JSON.stringify({reads:[{kind:'doc',path:'users/alice/stats/fast'},{kind:'doc',path:'users/alice/stats/slow'}]}),signal:controller.signal});
+    const reader=response.body.getReader();
+    const first=await reader.read();assert.match(new TextDecoder().decode(first.value),/"index":0/);assert.equal(verified,1);
+    release();let remainder='';for(;;){const chunk=await reader.read();if(chunk.done)break;remainder+=new TextDecoder().decode(chunk.value);}assert.match(remainder,/"index":1/);
+  }finally{release();controller.abort();await isolated.close();}
+});
 test('SP word custom domain passes browser preflight while foreign origins remain blocked',async()=>{
   const preflight=origin=>fetch(base+'/api/v1/rpc/startWordStudy',{method:'OPTIONS',headers:{Origin:origin,'Access-Control-Request-Method':'POST','Access-Control-Request-Headers':'authorization,content-type'}});
   const response=await preflight('https://word.junhyuk.site');

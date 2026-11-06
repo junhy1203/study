@@ -6,8 +6,9 @@ import {createFocusTracker} from '../camera-focus.js';
 
 const cacheSource=(await readFile(new URL('../client-cache.js',import.meta.url),'utf8')).replace(/^export /gm,'');
 const toastSource=(await readFile(new URL('../notifications.js',import.meta.url),'utf8')).replace(/^export /gm,'');
+const networkSource=(await readFile(new URL('../network-errors.js',import.meta.url),'utf8')).replace(/^export /gm,'');
 // These VM tests isolate the timer transport; real async key proofs are tested in face-security/browser tests.
-const source='const faceStudyAuthorization=()=>({fixture:true});\n'+(await readFile(new URL('../word-time.js',import.meta.url),'utf8')).replace(/^export /gm,'')+'\n'+cacheSource+'\n'+toastSource+'\n'+(await readFile(new URL('../data.js',import.meta.url),'utf8'))
+const source=networkSource+'\nconst faceStudyAuthorization=()=>({fixture:true});\n'+(await readFile(new URL('../word-time.js',import.meta.url),'utf8')).replace(/^export /gm,'')+'\n'+cacheSource+'\n'+toastSource+'\n'+(await readFile(new URL('../data.js',import.meta.url),'utf8'))
   .replace(/^import .*;\r?\n/gm,'').replaceAll('await faceStudyAuthorization(','faceStudyAuthorization(').replace('export function getStudyData','function getStudyData').split(/\r?\ntry \{\r?\n  authServices/)[0];
 
 test('production import graph creates only one instance of each shared state module',async()=>{
@@ -213,7 +214,20 @@ for(const failure of ['auth','storage'])test(`failed ${failure} initialization n
   t.context.user={uid:'owner',emailVerified:true};
   t.context.failConnection();await t.start();
   assert.equal(t.context.preview(),null);assert.equal(t.context.saved,0);
-  assert.equal(t.camera.status,'error');assert.match(t.camera.message,/(저장 서비스|자체 서버)에 연결하지 못했습니다/);
+  assert.equal(t.camera.status,'error');assert.match(t.camera.message,/서버 연결이 잠시 끊겼습니다/);
+});
+
+test('a transient forced token refresh failure can start once using the still-valid cached token',async()=>{
+  const t=cameraStartup(Promise.resolve(true));t.context.user={uid:'owner',emailVerified:true};t.context.connect();
+  vm.runInContext(`globalThis.tokenAttempts=[];authServices.auth.currentUser.getIdToken=async force=>{tokenAttempts.push(force===true);if(force)throw {code:'auth/network-request-failed',message:'Load failed'};return 'valid-cached-token';};`,t.context);
+  await t.start();assert.equal(t.context.saved,1);assert.deepEqual(Array.from(t.context.tokenAttempts),[true,false]);assert.equal(t.context.preview(),null);
+});
+
+test('an interrupted study-start reply shows Korean retry guidance instead of raw Load failed',async()=>{
+  const t=cameraStartup(Promise.resolve(true));t.context.user={uid:'owner',emailVerified:true};t.context.connect();
+  vm.runInContext(`call=()=>async()=>{throw new TypeError('Load failed');};`,t.context);
+  await t.start();const message=vm.runInContext('cameraStartError',t.context);
+  assert.match(message,/서버 연결이 잠시 끊겼습니다/);assert.ok(!message.includes('Load failed'));assert.equal(t.context.saved,0);
 });
 
 for(const user of [null,{uid:'owner',emailVerified:false}])test(`resolved ${user?'unverified member':'guest'} can still use camera preview`,async()=>{
@@ -258,19 +272,19 @@ for(const skew of [6000,-6000])test(`camera timer starts at zero and pauses/resu
   t.tick(6000);t.ui.paintTimer();assert.equal(t.display.textContent,'00:00:05');
 });
 
-test('ten seconds without an owner match freezes the visible timer and sends a paused checkpoint',async()=>{
+test('pose-related identity misses keep an occupied authenticated timer running',async()=>{
   const t=timerUi(0),tracker=createFocusTracker(),requests=[];
   const owner={reliable:true,face:true,studyActivity:true,identity:{enrolled:true,matched:true}};
   const wrong={...owner,identity:{enrolled:true,matched:false,status:'checking'}};
   for(let now=0;now<=2000;now+=200)tracker.update(owner,now);
   t.configure(async data=>{requests.push(data);return {data:{}};});t.ui.observeSession(t.snapshot(0));
-  for(let now=2200;now<=12200;now+=200){
+  for(let now=2200;now<=90000;now+=200){
     t.tick(200);Object.assign(t.camera,tracker.update(wrong,now));
     t.handlers['study:camera-changed']();await t.ui.syncCamera();
-    assert.equal(t.camera.tracking,now<12200);
+    assert.equal(t.camera.tracking,true);
   }
-  assert.equal(requests.at(-1).tracking,false);
-  const paused=t.display.textContent;t.tick(3000);t.ui.paintTimer();assert.equal(t.display.textContent,paused);
+  assert.equal(requests.at(-1).tracking,true);
+  assert.equal(t.camera.verification.required,false);
 });
 
 test('a remote word handoff closes this device camera when its active session changes',()=>{

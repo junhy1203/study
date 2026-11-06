@@ -4,7 +4,10 @@ import {randomUUID,randomBytes,createCipheriv,createDecipheriv} from 'node:crypt
 import {createFaceService,authorizeFaceStudy,envelopeHash,faceDayEnd,seoulDay} from '../functions/face-service.js';
 import {FACE_MODEL,FACE_PREPROCESS,FACE_SCHEMA,FACE_ORIGIN,studyNonce} from '../functions/face-protocol.js';
 import {createBrowserFaceKeys} from '../face-storage.js';
-import {signFace,encryptFaceSamples,decryptFaceSamples,validateFaceSamples} from '../face-crypto.js';
+import {signFace,encryptFaceSamples as encryptStoredFace,decryptFaceSamples as decryptStoredFace,validateFaceSamples} from '../face-crypto.js';
+import {sampleScanProfile,syntheticFace} from './scan-fixtures.mjs';
+const encryptFaceSamples=async(samples,keys,binding)=>encryptStoredFace(binding.schemaVersion===5&&Array.isArray(samples)?sampleScanProfile(samples[0]):samples,keys,binding);
+const decryptFaceSamples=async(...args)=>{const value=await decryptStoredFace(...args);return value.samples||value;};
 import {createIdentityMatcher,createEnrollmentCollector,faceImageQuality,faceFrameGeometry,createLocalFaceGuard,normalized,eyeRegionImage,lightingNormalizedFace,IDENTITY_THRESHOLD} from '../camera-identity.js';
 import {checkpointCamera} from '../functions/domain.js';
 import {createStudyRevocationCheck} from '../functions/study-auth.js';
@@ -48,16 +51,29 @@ test('envelope round trip binds account, browser, profile, versions and cipherte
     const corrupted={...encrypted,binding:{...encrypted.binding,[field]:`${encrypted.binding[field]}-tampered`}};
     await assert.rejects(decryptFaceSamples(corrupted,h.keys,opened.wrappedKey,h.uid,h.installationId),field);
   }
-  await assert.rejects(decryptFaceSamples({...encrypted,ciphertext:'A'+encrypted.ciphertext.slice(1)},h.keys,opened.wrappedKey,h.uid,h.installationId));
+  await assert.rejects(decryptFaceSamples({...encrypted,ciphertext:(encrypted.ciphertext[0]==='A'?'B':'A')+encrypted.ciphertext.slice(1)},h.keys,opened.wrappedKey,h.uid,h.installationId));
   const stored=JSON.stringify([...h.db.rows.values()]);assert.ok(!stored.includes('samples'));assert.ok(!stored.includes(encrypted.wrappedKey));
 });
-test('lighting profiles encrypt both descriptors and v2/v3 profiles remain readable',async()=>{
+test('historical profiles cannot unlock or authorize study and registrations have no daily quota',async()=>{
+  const h=await harness();await h.commit();
+  const state=h.db.rows.get(`faceSecurity/${h.uid}`);state.active.binding.schemaVersion=4;state.active.binding.preprocessVersion='full-aligned-rgb224-light-v3';
+  state.registrations=[h.now-1,h.now-2,h.now-3];
+  await assert.rejects(h.call('beginFaceUnlock',{profileId:h.ticket.binding.profileId}),/새 영상 3D/);
+  const data={controllerId:'controller',tracking:true,faceAuthorization:{installationId:h.installationId,profileId:h.ticket.binding.profileId,generation:h.ticket.binding.generation,grantId:h.grant.id,issuedAt:h.now}};
+  data.faceAuthorization.signature=await h.sign('study',studyNonce(data));
+  await assert.rejects(h.db.runTransaction(tx=>authorizeFaceStudy(tx,h.db,h.uid,data,null,h.now)),/새 영상 3D/);
+  await h.begin();assert.equal(h.ticket.binding.schemaVersion,5);await h.seal();await h.commit();
+  await h.begin();assert.equal(h.ticket.binding.schemaVersion,5);
+});
+test('scan profiles encrypt both descriptors and geometry; historical crypto remains isolated',async()=>{
   const h=await harness();await h.begin();
   const samples=Array(12).fill(normalized([...owner,...owner]));
   const encrypted=await encryptFaceSamples(samples,h.keys,h.ticket.binding);
   const restored=await decryptFaceSamples(encrypted,h.keys,encrypted.wrappedKey,h.uid,h.installationId);
   assert.equal(restored[0].length,2048);
   assert.ok(Math.abs(restored[0][0]-samples[0][0])<1e-7);
+  const twenty=await encryptFaceSamples(Array(20).fill(pairedOwner),h.keys,h.ticket.binding);
+  assert.equal((await decryptFaceSamples(twenty,h.keys,twenty.wrappedKey,h.uid,h.installationId)).length,18);
   const binding={...h.ticket.binding,preprocessVersion:'eyes-aligned-rgb224-v1',schemaVersion:2};
   const legacy=await encryptFaceSamples(Array(12).fill(owner),h.keys,binding);
   assert.deepEqual(await decryptFaceSamples(legacy,h.keys,legacy.wrappedKey,h.uid,h.installationId),Array(12).fill(owner));
@@ -165,11 +181,14 @@ test('concurrent commits consume one ticket; response-loss retry returns same ge
   const state=h.db.rows.get(`faceSecurity/${h.uid}`);assert.equal(state.registrations.length,1);assert.equal(state.audit.length,1);assert.equal(state.generation,1);
   const again=await h.commit();assert.equal(again.active.generation,1);
 });
-test('failed or cancelled replacement preserves old active profile and replacement limits survive browser changes',async()=>{
+test('more than three replacements per day succeed while failed and cancelled replacement preserves the active profile',async()=>{
   const h=await harness();await h.commit();const original=h.ticket.binding.profileId;
-  for(let i=0;i<2;i++){await h.begin();await h.seal();await h.commit();}
+  for(let i=0;i<5;i++){await h.begin();await h.seal();await h.commit();}
   const active=h.db.rows.get(`faceSecurity/${h.uid}`).active;assert.notEqual(active.profileId,original);
-  await h.daily();await assert.rejects(h.call('beginFaceEnrollment',{idempotencyKey:randomUUID(),signature:await h.sign('enroll',h.grant.id)}),{code:'resource-exhausted'});
+  assert.equal(h.db.rows.get(`faceSecurity/${h.uid}`).registrations.length,6);
+  await h.begin();await h.seal();
+  await assert.rejects(h.call('commitFaceEnrollment',{ticketId:h.ticket.id,idempotencyKey:h.ticket.idempotencyKey,envelopeHash:h.sealed.envelopeHash,signature:'invalid'}),{code:'permission-denied'});
+  await h.call('cancelFaceEnrollment',{ticketId:h.ticket.id,signature:await h.sign('cancel',h.ticket.id)});
   assert.equal(h.db.rows.get(`faceSecurity/${h.uid}`).active.profileId,active.profileId);
 });
 test('study authorization binds signature to sequence, tracking and active generation',async()=>{
@@ -185,29 +204,24 @@ test('server Seoul date and midnight clip credit even after delayed sync and fin
   const session={startedAtMs:midnight-20000,activeSinceMs:midnight-5000,leaseUntilMs:midnight+20000,faceAuthUntilMs:midnight,faceLeaseUntilMs:midnight+60000};
   for(const now of [midnight,midnight+60000,midnight+86400000]){const result=checkpointCamera(session,now,true);assert.equal(result.accumulatedSeconds,5);assert.equal(result.activeSinceMs,null);assert.equal(result.canResume,false);}
 });
-test('collector takes each pose only after confirmation and requires a separate save confirmation',()=>{
-  const collector=createEnrollmentCollector();let time=0,result,target=0;
-  assert.equal(collector.observe(owner,{time:time+=500,direction:'front'}).progress,0);
-  for(const [direction,count]of [['front',4],['left',2],['right',2],['up',2],['down',2]]){
-    assert.equal(collector.confirm(),true);assert.equal(collector.confirm(),false);
-    target+=count;for(let i=0;i<15;i++){result=collector.observe(owner,{time:time+=500,direction:'front'});if(result.progress>=target)break;}
-    assert.equal(result.direction,{4:'left',6:'right',8:'up',10:'down',12:'front'}[target]);
-    assert.equal(collector.observe(owner,{time:time+=500}).progress,target);
+test('collector automatically collects four distinct angles per direction and completes on the last downward frame',()=>{
+  const collector=createEnrollmentCollector();let time=0,result;
+  assert.equal(collector.confirm(),false);
+  const groups=[Array.from({length:4},(_,i)=>({yaw:0,pitch:i*.04})),Array.from({length:4},(_,i)=>({yaw:.10+i*.06,pitch:0})),Array.from({length:4},(_,i)=>({yaw:-.10-i*.06,pitch:0})),Array.from({length:4},(_,i)=>({yaw:0,pitch:-.10-i*.06})),Array.from({length:4},(_,i)=>({yaw:0,pitch:.10+i*.06}))];
+  for(const [index,poses] of groups.entries()){
+    for(const pose of poses){result=collector.observe(owner,{time:time+=700,pose});assert.equal(collector.observe(owner,{time:time+=700,pose}).progress,result.progress);}
+    assert.equal(result.progress,(index+1)*4);
   }
-  assert.equal(result.progress,12);assert.equal(result.complete,false);
-  assert.equal(collector.observe(owner,{time:time+=500,direction:'left'}).complete,false);
-  collector.confirm();
-  assert.equal(collector.observe(owner,{time:time+=500,direction:'front',quality:false}).complete,false);
-  assert.equal(collector.observe(owner,{time:time+=500,direction:'front'}).complete,true);
-  assert.equal(collector.observe(other,{time:time+=500,direction:'front'}).reset,undefined);
+  assert.equal(result.progress,20);assert.equal(result.complete,true);
+  assert.deepEqual(result.counts,[4,4,4,4,4]);
 });
 
 test('enrollment preserves collected samples when a later descriptor changes',()=>{
   const collector=createEnrollmentCollector();let result;
   collector.confirm();
-  for(let time=0;time<=3000;time+=500)result=collector.observe(owner,{time,direction:'front'});
+  for(let i=0;i<4;i++)result=collector.observe(owner,{time:i*700,pose:{yaw:i*.04,pitch:0}});
   assert.equal(result.progress,4);
-  collector.confirm();result=collector.observe(other,{time:3500,direction:'left'});
+  result=collector.observe(other,{time:3500,pose:{yaw:.2,pitch:0}});
   assert.equal(result.progress,5);assert.equal(result.counts[0],4);assert.equal(result.counts[1],1);
   assert.equal(result.reset,undefined);assert.deepEqual(result.samples[0],owner);assert.deepEqual(result.samples[4],other);
 });
@@ -226,7 +240,7 @@ test('automatic face framing aligns translated, resized and tilted faces without
     const [a,b,c,d,e,f]=framing.transform;
     assert.ok(Math.abs(a*x+c*y+e-112)<1e-8);assert.ok(Math.abs(b*x+d*y+f-85)<1e-8);
   }
-  assert.equal(faceFrameGeometry(makeFace(640,240,15,0),1280,720),null);
+  assert.equal(faceFrameGeometry(makeFace(640,240,10,0),1280,720),null);
   assert.equal(faceFrameGeometry(makeFace(15,200,100,0),1280,720),null);
 });
 
@@ -248,7 +262,7 @@ test('soft webcam texture can pass quality while blank, dark and overexposed fra
   assert.match(faceImageQuality(solid(245)),/강한 빛/);
 });
 
-for(const schemaVersion of [2,3,4])test(`soft webcam frames collect frontal enrollment with server schema ${schemaVersion}`,async()=>{
+for(const schemaVersion of [5])test(`soft webcam frames collect 3D scan references with server schema ${schemaVersion}`,async()=>{
   const previous=Object.getOwnPropertyDescriptor(globalThis,'OffscreenCanvas'),events=[],image=smoothFaceImage();
   const previousImageData=Object.getOwnPropertyDescriptor(globalThis,'ImageData');
   globalThis.ImageData=class {constructor(data,width,height){Object.assign(this,{data,width,height});}};
@@ -260,20 +274,52 @@ for(const schemaVersion of [2,3,4])test(`soft webcam frames collect frontal enro
     const tf={loadGraphModel:async()=>({execute:()=>{descriptions++;return {data:async()=>owner,dispose(){}};},dispose(){}}),tidy:fn=>fn(),browser:{fromPixels:pixels=>{assert.ok(pixels instanceof ImageData);return input;}}};
     guard=await createLocalFaceGuard(tf,{uid:'owner',ticket:{id:'enrollment-test',binding:{schemaVersion}}},()=>{throw Error('No server call should be made before all directions are collected');},event=>events.push(event));
     guard.confirmCapture();
-    const face=Array.from({length:478},()=>({x:.5,y:160/480}));
-    for(const i of [33,133])face[i]={x:280/640,y:160/480};
-    for(const i of [362,263])face[i]={x:360/640,y:160/480};
-    face[1]={x:.5,y:198.4/480};
+    const face=syntheticFace();
     let state;
-    for(let time=0;time<=4500;time+=500)state=await guard.check({width:640,height:480},{faceLandmarks:[face]},time);
-    assert.equal(state.progress,4);assert.equal(state.enrolled,false);
-    assert.equal(descriptions,schemaVersion>=3?20:10);
-    assert.equal(events.filter(event=>event.type==='face-progress').at(-1).direction,'left');
+    for(let time=0;time<=4500;time+=500){face[1].x=.5+Math.min(3,Math.floor(time/1000))*.04*.125;state=await guard.check({width:640,height:480},{faceLandmarks:[face]},time);}
+    assert.ok(state.progress>=2);assert.equal(state.enrolled,false);
+    assert.equal(descriptions,schemaVersion>=3?10:5);
+    assert.equal(events.filter(event=>event.type==='face-progress').at(-1).direction,'circle');
     assert.ok(!events.some(event=>event.label?.includes('가리는 물체')));
   }finally{
     guard?.close();if(previous)Object.defineProperty(globalThis,'OffscreenCanvas',previous);else delete globalThis.OffscreenCanvas;
     if(previousImageData)Object.defineProperty(globalThis,'ImageData',previousImageData);else delete globalThis.ImageData;
   }
+});
+
+test('isolated enrollment keeps tracking without queuing samples and discards samples after face loss',async()=>{
+  const previous=Object.getOwnPropertyDescriptor(globalThis,'OffscreenCanvas'),events=[],image=smoothFaceImage(),jobs=[];
+  globalThis.OffscreenCanvas=class{getContext(){return {setTransform(){},fillRect(){},drawImage(){},getImageData:()=>image};}};
+  let guard,closed=false;
+  const settle=()=>new Promise(resolve=>setImmediate(resolve));
+  try{
+    guard=await createLocalFaceGuard({loadGraphModel(){throw Error('Must use isolated model');}},
+      {uid:'owner',ticket:{binding:{schemaVersion:5}}},()=>{throw Error('No incomplete profile may be saved');},event=>events.push(event),
+      {describerFactory:async()=>({describe:frame=>new Promise((resolve,reject)=>jobs.push({frame,resolve,reject})),close(){closed=true;}})});
+    const source={width:640,height:480},result={faceLandmarks:[syntheticFace()]};
+    const initial=await guard.check(source,result,0);
+    assert.equal(initial.matched,false);assert.equal(initial.enrolled,false);assert.equal(jobs.length,1);
+    for(const time of [400,800,1200])await guard.check(source,result,time);
+    assert.equal(jobs.length,1,'no backlog while descriptor is pending');
+    assert.equal(events.filter(e=>e.type==='face-scan-direction').length,4,'live directions do not await descriptors');
+    jobs[0].resolve(owner);await settle();
+    assert.equal(jobs.length,2,'lighting-normalized descriptor is still required');
+    assert.deepEqual(jobs[0].frame,image);
+    assert.deepEqual(jobs[1].frame,lightingNormalizedFace(image));
+    await guard.check(source,{faceLandmarks:[]},1600);
+    jobs[1].resolve(owner);await settle();
+    assert.equal(events.filter(e=>e.type==='face-progress').at(-1).state,'QUALITY_HOLD');
+    await guard.check(source,result,2000);
+    jobs[2].resolve(owner);await settle();jobs[3].resolve(owner);await settle();
+    assert.equal(events.filter(e=>e.type==='face-progress').at(-1).progress,1);
+    await guard.check(source,result,2800);
+    await guard.check(source,{faceLandmarks:[syntheticFace(),syntheticFace()]},3200);
+    jobs[4].resolve(owner);await settle();jobs[5].resolve(owner);await settle();
+    assert.equal(events.filter(e=>e.type==='face-progress').at(-1).state,'QUALITY_HOLD');
+    await guard.check(source,result,4000);jobs[6].reject(Error('descriptor failed'));await settle();
+    await assert.rejects(guard.check(source,result,4400),/descriptor failed/);
+  }finally{guard?.close();if(previous)Object.defineProperty(globalThis,'OffscreenCanvas',previous);else delete globalThis.OffscreenCanvas;}
+  assert.equal(closed,true);
 });
 
 test('multi-face matching selects the owner regardless of order and counts each frame once',()=>{

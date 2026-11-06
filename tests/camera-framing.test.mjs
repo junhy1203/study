@@ -7,6 +7,25 @@ const makeFace = (x = .7, y = .3, size = .06) => ({ faceLandmarks: [[
   { x, y, z: -.1 }, { x: x + size, y }, { x: x + size / 2, y: y + size },
 ]] });
 
+test('fast enrollment skips body inference only while a full face is visible and preserves face recovery',async()=>{
+  const previous=globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas=class{getContext(){return {drawImage(){},getImageData(){return {};}};}};
+  let full=makeFace(.3,.3,.3),enrolling=true,poseCalls=0,engine;
+  const checked=[],source={width:640,height:480};
+  try{
+    engine=await createCameraInference({FilesetResolver:{forVisionTasks:async()=>({})},
+      FaceLandmarker:{createFromOptions:async()=>({detectForVideo:()=>full,detect:()=>({faceLandmarks:[]}),close(){}})},
+      PoseLandmarker:{createFromOptions:async()=>({detectForVideo(){poseCalls++;return {landmarks:[]};},close(){}})},
+      HandLandmarker:{createFromOptions:async()=>({detectForVideo:()=>({landmarks:[]}),close(){}})}},
+      {load:async()=>({detect:async()=>[],dispose(){}})},
+      {setBackend:async()=>true,ready:async()=>{},getBackend:()=> 'cpu'},undefined,
+      {identityFactory:async()=>({get enrolling(){return enrolling;},check:async(image,result)=>{checked.push({image,result});return {enrolled:!enrolling};},close(){}})});
+    await engine.detect(source,0);assert.equal(poseCalls,0);assert.equal(checked[0].image,source);assert.equal(checked[0].result,full);
+    full={faceLandmarks:[]};await engine.detect(source,400);assert.equal(poseCalls,1,'body-guided missing-face search still runs');
+    full=makeFace(.3,.3,.3);enrolling=false;await engine.detect(source,800);assert.equal(poseCalls,2,'study inference resumes after enrollment');
+  }finally{engine?.close();if(previous===undefined)delete globalThis.OffscreenCanvas;else globalThis.OffscreenCanvas=previous;}
+});
+
 test('face search is a padded pixel-square at every aspect ratio and stays in frame', () => {
   for (const [width, height] of [[1280,720],[720,1280],[640,480]]) {
     for (const x of [0,.5,.95]) {

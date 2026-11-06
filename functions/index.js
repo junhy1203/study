@@ -1,4 +1,5 @@
 import { getApps, initializeApp } from 'firebase-admin/app';
+import {getAuth} from 'firebase-admin/auth';
 import { getFirestore, Timestamp } from './platform-store.js';
 import { onCall, HttpsError } from './platform-http.js';
 import { onSchedule } from './platform-scheduler.js';
@@ -13,10 +14,12 @@ import {finishSession as finishSessionRecord, expireUserSessions} from './sessio
 import {cleanupExpiredSessions} from './session-cleanup.js';
 import {authorizeFaceStudy} from './face-service.js';
 import {assertStudyAccount} from './study-auth.js';
+import {accountBadges,provisionPrivateBadges} from './account-badges.js';
 export {getFaceEnrollmentStatus,beginDailyFaceAuth,completeDailyFaceAuth,beginFaceEnrollment,sealFaceKeyEnvelope,commitFaceEnrollment,beginFaceUnlock,unlockFaceKeyEnvelope,revokeFaceEnrollment,cancelFaceEnrollment,lockFaceEnrollment,cleanupFaceSecurityMetadata} from './face-api.js';
 export { searchSchools, saveSchool, getSchoolOverview, getUpcomingExams, chatWithStudy, getStudyBriefing, getAiUsage } from './integrations.js';
 export { startWordStudy, syncWordStudy } from './word-study.js';
 export {saveWordStudyLink,restoreWordStudyLink,removeWordStudyLink} from './word-link.js';
+export {getPlayProfile,updatePlayProfile,updateStudyWorld,getStudyWorldInvites,purchasePhoneTime,beginPhoneSession,purchaseAvatarItem,getStudyPersonality,refreshStudyPersonalities} from './play-api.js';
 
 const app = getApps()[0] ?? initializeApp();
 const db = getFirestore(app, 'study-data');
@@ -29,6 +32,13 @@ function userId(request, verified = false) {
 }
 
 export const getDailyReport = onCall(options, request => dailyReport(db,userId(request)));
+export const getAccountBadges=onCall(options,request=>accountBadges(db,userId(request),request.auth.token));
+let privateBadgesProvisioned=false;
+export const provisionAccountBadges=onSchedule({...options,schedule:'every 24 hours'},async()=>{
+  if(privateBadgesProvisioned)return;
+  const result=await provisionPrivateBadges(db,getAuth(app));
+  if(result.persisted){privateBadgesProvisioned=true;console.log(JSON.stringify({event:'private-badges-awarded',count:result.badges.length}));}
+});
 export const cleanupIdleStudyRooms=onSchedule({...options,schedule:'every 1 minutes',timeZone:'Asia/Seoul',timeoutSeconds:120},()=>purgeIdleRooms(db));
 export const updateStudySocial = onCall(options, request => changeSocial(db,userId(request,true),request.data?.action,request.data));
 export const getStudySocial = onCall(options, request => socialSnapshot(db,userId(request,true),{revision:request.data?.revision,includeLists:request.data?.includeLists===true,listScope:request.data?.listScope,includeSchoolRooms:request.data?.includeSchoolRooms===true}));
@@ -116,7 +126,7 @@ export const syncStudyCamera = onCall(options, async request => {
     if (sequence <= session.sequence) return { ignored: true, session:{...session,startedAtMs:session.startedAt.toMillis(),serverNowMs:Date.now()} };
     const profile=(await transaction.get(db.doc(`users/${uid}`))).data();
     const activity=await readActivityRoom(transaction,db,uid,profile);
-    const wordPaused=Boolean(session.wordSessionId && session.wordLeaseUntilMs>Date.now());
+    const wordPaused=Boolean(session.wordSessionId && (session.wordLeaseUntilMs>Date.now() || profile?.wordStudySessionId===session.wordSessionId&&profile?.wordAppUntilMs>Date.now()));
     const update = {...checkpointCamera({ ...session,...faceAccess, startedAtMs: session.startedAt.toMillis() }, Date.now(), tracking&&!wordPaused),...faceAccess,wordPaused,...(!wordPaused?{wordSessionId:null,wordLeaseUntilMs:null}:{wordSessionId:session.wordSessionId,wordLeaseUntilMs:session.wordLeaseUntilMs})};
     const updatedAt = Timestamp.now();
     const presenceUntilMs=updatedAt.toMillis()+CAMERA_PRESENCE_MS;

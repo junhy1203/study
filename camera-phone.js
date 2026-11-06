@@ -1,5 +1,21 @@
 // Pure local phone observation policy. Coordinates are normalized to the original image.
-export const PHONE_LIMITS = Object.freeze({ seed: .05, create: .2, window: 2000, separation: 400, grace: 1000, maxAge: 1500, maxHold: 2500 });
+export const PHONE_LIMITS = Object.freeze({ seed: .05, create: .48, weak: .28, window: 5000, separation: 400, weakSeparation:800, grace: 1000, maxAge: 1500, maxHold: 2500 });
+// Downweight skin-filled detections only when they also overlap a landmark-detected palm.
+// Pixel data stays local to this inference; no images leave the worker.
+export function phoneCandidateEvidence(image,detection,{palmOverlap=0}={}){
+  const [x,y,w,h]=detection.bbox||[],{width,height,data}=image;
+  if(![x,y,w,h].every(Number.isFinite)||w<=0||h<=0)return {score:0,palmLike:false};
+  if(!data)return {score:detection.score,palmLike:false};
+  let count=0,skin=0;
+  const step=Math.max(1,Math.floor(Math.min(w,h)/24));
+  for(let py=Math.max(0,Math.floor(y+h*.15));py<Math.min(height,y+h*.85);py+=step)for(let px=Math.max(0,Math.floor(x+w*.15));px<Math.min(width,x+w*.85);px+=step){
+    const i=(py*width+px)*4,r=data[i],g=data[i+1],b=data[i+2];
+    const cb=128-.168736*r-.331264*g+.5*b,cr=128+.5*r-.418688*g-.081312*b;
+    count++;if(cb>=77&&cb<=127&&cr>=133&&cr<=173&&r>g&&r>b)skin++;
+  }
+  const skinFraction=count?skin/count:0,palmLike=palmOverlap>.6&&skinFraction>.72;
+  return {score:detection.score*(palmLike?.25:1),palmLike,skinFraction};
+}
 export const FULL_FRAME = Object.freeze({ x: 0, y: 0, width: 1, height: 1, key: 'full' });
 const area = b => b[2] * b[3];
 const intersection = (a, b) => Math.max(0, Math.min(a[0]+a[2], b[0]+b[2])-Math.max(a[0],b[0])) *
@@ -47,16 +63,20 @@ export function createPhoneTracker() {
         track={id:nextId++,box:candidate.box,history:[],lastSeen:observedAt,lastPositive:null,lastPositiveReceipt:null,confirmed:false};tracks.push(track);
       }
       assigned.add(track.id);track.box=candidate.box;track.score=candidate.score;track.lastSeen=observedAt;
-      const positive=candidate.score>=PHONE_LIMITS.create;
+      const positive=candidate.score>=PHONE_LIMITS.weak;
+      const strong=candidate.score>=PHONE_LIMITS.create;
       const old=track.history.find(e=>e.frameId===frameId);
-      if(old)old.positive ||= positive;else track.history.push({frameId,at:observedAt,positive});
+      // A low-confidence detection is inconclusive, rather than a covered negative.
+      // Full-frame scores must not erase stronger evidence from magnified crops.
+      if(old){old.positive ||= positive;old.strong ||= strong;}else if(positive)track.history.push({frameId,at:observedAt,positive,strong});
       if(positive){track.lastPositive=observedAt;track.lastPositiveReceipt=now;track.released=false;}
     }
     for(const track of tracks){
       if(!assigned.has(track.id)&&covers(region,track.box)&&!track.history.some(e=>e.frameId===frameId))track.history.push({frameId,at:observedAt,positive:false});
       track.history=track.history.filter(e=>observedAt-e.at<=PHONE_LIMITS.window).slice(-3);
       const positives=track.history.filter(e=>e.positive);
-      if(positives.length>=2 && positives.at(-1).at-positives[0].at>=PHONE_LIMITS.separation)track.confirmed=true;
+      const strong=positives.filter(e=>e.strong&&observedAt-e.at<=2000);
+      if(strong.length>=2&&strong.at(-1).at-strong[0].at>=PHONE_LIMITS.separation||positives.length>=3&&positives.at(-1).at-positives[0].at>=PHONE_LIMITS.weakSeparation)track.confirmed=true;
     }
     return state(now);
   }

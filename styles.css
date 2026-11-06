@@ -1,4 +1,15 @@
 @charset "UTF-8";
+@import url('./friend-profile.css?v=20261105-shop10');
+@import url('./avatar-effects.css?v=20261105-shop10');
+@import url('./avatar-background.css?v=20261105-shop10');
+@import url('./avatar-rpg.css?v=20261105-shop10');
+@import url('./avatar-street.css?v=20261105-shop10');
+@import url('./avatar-luxury.css?v=20261106-luxury1');
+@import url('./avatar-accessories.css?v=20261106-accessory1');
+@import url('./avatar-cinematic.css?v=20261106-cinematic1');
+@import url('./play.css?v=20261104-1');
+@import url('./study-room.css?v=20261106-world4');
+@import url('./camera-verification.css?v=20261102-admin1');
 @import url('./word-link.css?v=20261022-1');
 @import url('./social-report.css?v=20261023-16');
 :root{--bg:#f7f7f0;--paper:#fffef9;--text:#303b32;--muted:#8b9186;--green:#54725a;--sage:#e8eddf;--border:#e5e7dc;--sand:#f0e8d7;--lavender:#ebe7ef;--radius:22px}

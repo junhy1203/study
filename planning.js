@@ -1,5 +1,5 @@
-import { getStudyData } from './data.js?v=20261025-8';
-import { updatePlan } from './integrations.js?v=20261025-8';
+import { getStudyData } from './data.js?v=20261105-shop10';
+import { updatePlan } from './integrations.js?v=20261103-privateui1';
 import { planSubjects } from './functions/plan-domain.js?v=20261022-18';
 import { goalProgress, goalSummary, durationLabel, periodLabels } from './goal-state.js?v=20261022-18';
 import { showToast } from './notifications.js?v=20261022-18';
@@ -99,7 +99,7 @@ function render() {
     rendered.set(element,signature);element.replaceChildren();
     for (const subject of subjects) {
       const row=node('div','subject-setting-row');row.append(node('span','',subject.name));
-      if(subject.id==='other')row.append(node('span','tiny muted','기본 과목'));
+      if(subject.id==='other'||subject.name==='영단어')row.append(node('span','tiny muted','기본 과목'));
       else {const remove=node('button','goal-remove','삭제');remove.type='button';remove.dataset.subjectRemove=subject.id;remove.disabled=pending;remove.setAttribute('aria-label',`${subject.name} 과목 삭제`);row.append(remove);}
       element.append(row);
     }

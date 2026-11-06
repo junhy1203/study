@@ -1,22 +1,56 @@
-import {authReady,getAuthUser} from './auth.js?v=20261022-1';
-import {getStudyData} from './data.js?v=20261025-8';
+import {authReady,getAuthUser} from './auth.js?v=20261104-1';
+import {getStudyData} from './data.js?v=20261105-shop10';
 import {studyCall,serviceError,element as el,duration} from './study-api.js?v=20261024-selfhost1';
 import {showToast} from './notifications.js?v=20261022-18';
 import {roomClock,memberTime,memberStatus} from './room-time.js?v=20261023-16';
 import {openSocialPanel} from './social-dialog.js?v=20261023-8';
+import {renderFriendCard} from './friend-card.js?v=20261105-shop10';
+import {expandProfile,collapseProfile,reduceProfileMotion} from './profile-motion.js?v=20261105-shop10';
+import {avatarBackground as avatarCardBackground} from './avatar-renderer.js?v=20261105-shop10';
 let state={friends:[],friendRequests:[],sentRequests:[],roomInvites:[],room:null,code:null};
 let revision=-1,owner=null,requesting=false,busy=false,lastPoll=0,epoch=0,lastError='';
+let friendsLoaded=false;
 let roomClockAnchor=null;
 const refreshQueue=new Set(),refreshing=new Set();
 const roomNow=()=>roomClockAnchor?roomClockAnchor.serverMs+Math.max(0,performance.now()-roomClockAnchor.localMs):Date.now();
 function button(text,action,id) {const node=el('button','social-button',text);node.type='button';node.dataset.socialAction=action;if(id)node.dataset.socialId=id;return node;}
 function empty(text) {return el('p','empty-data',text);}
+function removeFriendCard(node){
+  if(node.friendRemoval)return node.friendRemoval;
+  if(reduceProfileMotion()){node.remove();return Promise.resolve();}
+  node.dataset.friendRemoving='true';node.setAttribute('inert','');const height=node.getBoundingClientRect().height;
+  const animation=node.animate([{height:`${height}px`,opacity:1,transform:'scale(1)',marginBottom:'0px'},{height:'0px',opacity:0,transform:'scale(.97)',marginBottom:'-16px',borderWidth:'0px'}],{duration:240,easing:'ease-in-out',fill:'forwards'});
+  return node.friendRemoval=animation.finished.catch(()=>{}).then(()=>node.remove());
+}
 function pair(title,description,actions=[]) {
-  const row=el('div','social-person'),copy=el('div','social-person-copy');copy.append(el('strong','',title));if(description)copy.append(el('p','tiny muted',description));
+  const profile=actions.find(node=>node.dataset.socialAction==='profile');
+  const row=el('div','social-person'),copy=el(profile?'button':'div',`social-person-copy${profile?' friend-profile-link':''}`);
+  if(profile){copy.type='button';copy.dataset.socialAction='profile';copy.dataset.socialId=profile.dataset.socialId;}
+  copy.append(el('strong','',title));if(description)copy.append(el('p','tiny muted',description));
   const controls=el('div','social-actions');controls.append(...actions);row.append(copy,controls);return row;
 }
 function list(selector,rows,fallback,render) {
+  if(selector==='[data-friend-list]'){
+    for(const root of document.querySelectorAll(selector)){
+      if(!friendsLoaded){if(root.dataset.friendListSignature!=='loading'){const placeholder=el('div','friend-list-placeholder','친구 목록을 불러오는 중…');placeholder.setAttribute('role','status');root.replaceChildren(placeholder);root.dataset.friendListSignature='loading';}continue;}
+      const invite=state.room&&(state.room.visibility||(state.room.type==='school'?'public':'private'))==='private'?state.room.memberIds:null,signature=JSON.stringify([rows,invite]);if(root.dataset.friendListSignature===signature)continue;root.dataset.friendListSignature=signature;
+      const old=new Map([...root.children].filter(node=>node.dataset.friendUid).map(node=>[node.dataset.friendUid,node]));
+      const ids=new Set(rows.map(row=>row.uid)),removing=[];for(const node of [...root.childNodes])if(node.nodeType!==1||!ids.has(node.dataset.friendUid)){if(node.nodeType===1&&node.dataset.friendUid)removing.push(removeFriendCard(node));else node.remove();}
+      if(!rows.length){if(removing.length)void Promise.all(removing).then(()=>{if(root.dataset.friendListSignature===signature)root.replaceChildren(empty(fallback));});else root.replaceChildren(empty(fallback));continue;}
+      rows.forEach((friend,index)=>{const prior=old.get(friend.uid),row=friendRow(friend,prior),current=[...root.children].filter(node=>!node.dataset.friendRemoving)[index];if(current!==row)root.insertBefore(row,current||null);if(!prior&&!matchMedia('(prefers-reduced-motion: reduce)').matches)row.animate([{opacity:0,transform:'translateY(12px)'},{opacity:1,transform:'translateY(0)'}],{duration:280,delay:Math.min(index*45,225),fill:'backwards',easing:'ease-out'});});
+    }return;
+  }
   for(const root of document.querySelectorAll(selector))root.replaceChildren(...(rows.length?rows.map(render):[empty(fallback)]));
+}
+function friendRow(friend,existing){
+  const row=existing||el('div','social-person friend-list-row'),profile=existing?.querySelector('.friend-inline')||button('','profile',friend.uid);row.dataset.friendUid=friend.uid;profile.className='friend-inline';profile.setAttribute('aria-label',`${friend.displayName} 프로필`);
+  avatarCardBackground(row,friend.avatar);
+  const priorFooter=existing?.querySelector('.friend-card-footer');
+  renderFriendCard(profile,friend);
+  const footer=profile.querySelector('.friend-card-footer')||priorFooter||el('div','friend-card-footer');
+  const controls=el('div','social-actions');
+  if(state.room&&(state.room.visibility||(state.room.type==='school'?'public':'private'))==='private'&&!state.room.memberIds.includes(friend.uid))controls.append(button('초대','inviteOne',friend.uid));
+  controls.append(button('삭제','remove',friend.uid));footer.querySelector('.social-actions')?.remove();footer.append(controls);if(existing){if(priorFooter!==footer)priorFooter?.replaceWith(footer);}else row.append(profile,footer);return row;
 }
 function peerCards(room,compact=false) {
   const grid=el('div',compact?'room-peers room-peers-compact':'room-peers');
@@ -116,8 +150,7 @@ function paint() {
   for(const node of document.querySelectorAll('[data-social-error]')){node.textContent=lastError;node.hidden=!lastError;}
   for(const node of document.querySelectorAll('[data-friend-request-count]')){node.textContent=String(state.friendRequests.length);node.hidden=!state.friendRequests.length;}
   for(const node of document.querySelectorAll('[data-room-invite-count]')){const count=state.roomInvites.filter(row=>row.expiresAtMs>roomNow()).length;node.textContent=String(count);node.hidden=!count;}
-  list('[data-friend-list]',state.friends,'친구 코드를 입력해 첫 친구를 추가해 보세요.',row=>pair(row.displayName,'',[
-    ...(state.room&&(state.room.visibility||(state.room.type==='school'?'public':'private'))==='private'&&!state.room.memberIds.includes(row.uid)?[button('방에 초대','inviteOne',row.uid)]:[]),button('삭제','remove',row.uid)]));
+  list('[data-friend-list]',state.friends,'친구 코드를 입력해 첫 친구를 추가해 보세요.',friendRow);
   list('[data-friend-requests]',state.friendRequests,'받은 친구 요청이 없어요.',row=>pair(row.displayName,'친구 요청을 보냈어요.',[button('수락','accept',row.uid),button('거절','reject',row.uid)]));
   list('[data-sent-requests]',state.sentRequests,'보낸 친구 요청이 없어요.',row=>pair(row.displayName,'수락 대기 중',[button('취소','cancel',row.uid)]));
   const now=Date.now();
@@ -161,9 +194,6 @@ function paintDock() {
   if(focus) {
     if(!dock||!focus.contains(dock)){dock?.remove();dock=el('section','room-focus-peers');dock.dataset.roomDock='';const caption=focus.querySelector('.cam-caption');if(caption)caption.after(dock);else focus.append(dock);}
     dock.replaceChildren(el('h3','',`${state.room.title} · ${state.room.memberIds.length}명`),roomLeaders(state.room),peerCards(state.room,true));
-  } else if(!document.querySelector('[data-room-panel]')) {
-    if(!dock||dock.tagName!=='A'){dock?.remove();dock=el('a','room-dock');dock.dataset.roomDock='';dock.href='study.html#study-room';document.body.append(dock);}
-    dock.textContent=`◷ ${state.room.title} · ${state.room.memberIds.length}명 함께 공부 중`;
   } else dock?.remove();
 }
 async function poll(force=false,listScope) {
@@ -180,6 +210,7 @@ async function poll(force=false,listScope) {
     const next=await studyCall('getStudySocial',{revision,includeLists:play,...(document.querySelector('[data-social-panel="rooms"][open]')?{includeSchoolRooms:true}:{}),...(listScope?{listScope}:{})});
     if(token!==epoch||getAuthUser()?.uid!==uid)return;
     const previousRoom=state.room;
+    if(Array.isArray(next.friends))friendsLoaded=true;
     state={...state,...next,room:mergeRoomSnapshot(previousRoom,next.room)};if(play&&!listScope)revision=next.revision;
     if(Number.isFinite(next.serverNowMs))roomClockAnchor={serverMs:next.serverNowMs,localMs:performance.now()};
     if(previousRoom&&!state.room)showToast('스터디룸이 종료되었거나 만료되었습니다.');
@@ -218,6 +249,7 @@ document.addEventListener('submit',event=>{
 document.addEventListener('click',event=>{
   const target=event.target.closest('[data-social-action]');if(!target)return;
   const action=target.dataset.socialAction,id=target.dataset.socialId;
+  if(action==='profile'){window.dispatchEvent(new CustomEvent('study:open-profile',{detail:{uid:id,anchor:target}}));return;}
   if(action==='refreshSchoolRooms'){void poll(true);return;}
   if(action==='joinCode'){void change(action,{code:state.codePreview?.code});return;}
   if(action==='roomCode'){void change(action,{roomId:state.room?.id});return;}
@@ -231,16 +263,17 @@ document.addEventListener('click',event=>{
   if(action==='confirmClose'||action==='remove') {
     const dialog=document.querySelector('[data-social-confirm]');if(!dialog)return;
     dialog.querySelector('[data-confirm-text]').textContent=action==='confirmClose'?'모든 참여자의 방이 종료되고 이 방에는 다시 입장할 수 없습니다.':'친구 목록에서 서로 삭제됩니다. 다시 추가하려면 친구 요청이 필요합니다.';
-    dialog.querySelector('[data-confirm-action]').dataset.pendingAction=action==='confirmClose'?'close':'remove';dialog.querySelector('[data-confirm-action]').dataset.pendingId=id;dialog.showModal();return;
+    dialog.querySelector('[data-confirm-action]').dataset.pendingAction=action==='confirmClose'?'close':'remove';dialog.querySelector('[data-confirm-action]').dataset.pendingId=id;dialog.showModal();expandProfile(dialog,target);return;
   }
   if(action==='confirm') {
-    const actual=target.dataset.pendingAction,pendingId=target.dataset.pendingId;target.closest('dialog').close();void change(actual,actual==='close'?{roomId:pendingId}:{uid:pendingId});return;
+    const actual=target.dataset.pendingAction,pendingId=target.dataset.pendingId;void collapseProfile(target.closest('dialog')).then(()=>change(actual,actual==='close'?{roomId:pendingId}:{uid:pendingId}));return;
   }
-  if(action==='dismiss'){target.closest('dialog').close();return;}
+  if(action==='dismiss'){void collapseProfile(target.closest('dialog'));return;}
   if(action==='inviteOne'){void change('invite',{roomId:state.room?.id,uids:[id]});return;}
   void change(action,['join','decline','leave','close'].includes(action)?{roomId:id}:{uid:id});
 });
 document.addEventListener('toggle',event=>{const id=event.target.dataset?.roomPreviewId;if(id){if(event.target.open)expandedRooms.add(id);else expandedRooms.delete(id);}},true);
+document.addEventListener('cancel',event=>{if(!event.target.matches('[data-social-confirm]'))return;event.preventDefault();void collapseProfile(event.target);},true);
 function navigate(){paint();void poll(true);if(window.location?.hash==='#study-room')openSocialPanel('rooms',document.querySelector('[data-social-open="rooms"]'));}
 window.addEventListener('study:navigated',navigate);
 window.addEventListener('study:panel-opened',event=>{if(event.detail?.kind==='rooms')void poll(true);});
@@ -255,6 +288,7 @@ window.addEventListener('study:room-activity',event=>{
   paint();
 });
 window.addEventListener('study:auth-changed',()=>{
+  if(owner!==getAuthUser()?.uid)friendsLoaded=false;
   const uid=getAuthUser()?.uid||null;if(uid===owner)return;owner=uid;epoch++;revision=-1;lastPoll=0;lastError='';roomClockAnchor=null;refreshQueue.clear();refreshing.clear();for(const dialog of document.querySelectorAll('[data-social-panel][open]'))dialog.close();expandedRooms.clear();state={friends:[],friendRequests:[],sentRequests:[],roomInvites:[],room:null,code:null};paint();void poll(true);
 });
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)void poll(true);});

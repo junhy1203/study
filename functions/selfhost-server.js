@@ -6,6 +6,7 @@ import {getFirestore} from './platform-store.js';
 import {encode} from './local-store.js';
 import * as handlers from './index.js';
 import {FACE_ORIGIN} from './face-protocol.js';
+import {createTokenVerifier} from './token-verifier.js';
 
 const statusCodes = {'invalid-argument':400,'unauthenticated':401,'permission-denied':403,'not-found':404,'already-exists':409,'failed-precondition':412,'resource-exhausted':429,'aborted':409,'unavailable':503,'deadline-exceeded':504};
 function fail(code,message) {throw Object.assign(new Error(message),{code});}
@@ -95,6 +96,22 @@ export function createApi({db,verifyToken,allowedOrigins,callables=handlers,log=
         const input=await body(req),ref=await authorizeRead(db,token.uid,input),snapshot=await ref.get();
         send(res,200,input.kind==='doc'?record(snapshot):{docs:snapshot.docs.map(record)});return;
       }
+      if(req.method==='POST'&&url.pathname==='/api/v1/read-batch'){
+        const input=await body(req),reads=input?.reads;
+        if(!Array.isArray(reads)||reads.length<1||reads.length>16)fail('invalid-argument','한 번에 1~16개 조회만 가능합니다.');
+        const currentRate=rates.get(rateKey);currentRate.count+=reads.length-1;
+        if(currentRate.count>300)fail('resource-exhausted','요청이 많습니다. 잠시 후 다시 시도해 주세요.');
+        res.writeHead(200,{'Content-Type':'application/x-ndjson; charset=utf-8','X-Accel-Buffering':'no'});res.flushHeaders();
+        await Promise.all(reads.map(async(item,index)=>{
+          let result;
+          try{
+            const ref=await authorizeRead(db,token.uid,item),snapshot=await ref.get();
+            result={value:item.kind==='doc'?record(snapshot):{docs:snapshot.docs.map(record)}};
+          }catch(cause){result={error:publicError(cause)};}
+          if(!res.destroyed&&!res.writableEnded)res.write(serialized({index,...result})+'\n');
+        }));
+        res.end();return;
+      }
       if(req.method==='POST'&&url.pathname==='/api/v1/watch') {
         const input=await body(req);
         if(input.kind!=='doc'||!input.path?.startsWith(`users/${token.uid}`))fail('permission-denied','본인의 상태만 구독할 수 있습니다.');
@@ -152,20 +169,7 @@ export async function startSelfHost() {
   if(process.env.STUDY_BACKEND!=='selfhost')throw new Error('STUDY_BACKEND=selfhost required');
   const db=getFirestore();await db.ready;
   const app=getApps().find(a=>a.name==='[DEFAULT]')??initializeApp({projectId:process.env.GCLOUD_PROJECT});
-  const auth=getAuth(app),cache=new Map();
-  async function verifyToken(value,{checkRevoked=false}={}) {
-    if(checkRevoked)return auth.verifyIdToken(value,true);
-    const decoded=await auth.verifyIdToken(value);
-    const cached=cache.get(decoded.uid);
-    if(!cached||cached.expires<Date.now()) {
-      const user=await auth.getUser(decoded.uid);
-      const state={disabled:user.disabled,validSince:Date.parse(user.tokensValidAfterTime||'1970-01-01')/1000,expires:Date.now()+45000};
-      cache.set(decoded.uid,state);if(cache.size>10000)cache.delete(cache.keys().next().value);
-    }
-    const user=cache.get(decoded.uid);
-    if(user.disabled||decoded.auth_time<user.validSince)throw new Error('revoked');
-    return decoded;
-  }
+  const auth=getAuth(app),verifyToken=createTokenVerifier(auth);
   const allowedOrigins=JSON.parse(process.env.STUDY_ALLOWED_ORIGINS||'["https://study.junhyuk.site","https://word.junhyuk.site","https://junhyuk1203.github.io"]');
   const api=createApi({db,verifyToken,allowedOrigins,log:(name,fields)=>console.log(JSON.stringify({event:name,...fields}))});
   const host='127.0.0.1',port=Number(process.env.STUDY_PORT||18081);

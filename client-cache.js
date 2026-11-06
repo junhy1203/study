@@ -31,6 +31,7 @@ export const readCache = createReadCache();
 // Subtraction preserves compatibility with profiles and clients predating it.
 export function statsRevision(profile, key) {
   const revision=profile?.studyRevision||0;
+  if(key==='focusTime')return revision-(profile?.wordCheckpointRevision||0)+(profile?.focusRevision||0);
   return ['summary','focusTime','ranking','ownRanking','schoolRanking'].includes(key)
     ? revision-(profile?.wordCheckpointRevision||0) : revision;
 }

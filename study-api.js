@@ -1,5 +1,5 @@
-import {authReady,getAuthUser} from './auth.js?v=20261022-1';
-import {serverCallable} from './server-client.js?v=20261024-selfhost1';
+import {authReady,getAuthUser} from './auth.js?v=20261104-1';
+import {serverCallable} from './server-client.js?v=20261103-privateui1';
 export async function studyCall(name,data={}) {
   if(!await authReady)throw new Error('서비스를 불러오지 못했습니다. 새로고침해 주세요.');
   if(!getAuthUser())throw new Error('로그인 후 이용해 주세요.');

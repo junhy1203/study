@@ -1,6 +1,6 @@
 // Shared by worker and compatibility mode. Frames never leave the device.
 import { faceBounds, faceSearchRegion, restoreFaceCoordinates, sameFace } from './camera-framing.js';
-import { createPhoneTracker, createPhoneScheduler, PHONE_LIMITS } from './camera-phone.js?v=20261025-8';
+import { createPhoneTracker, createPhoneScheduler, PHONE_LIMITS, phoneCandidateEvidence } from './camera-phone.js?v=20261103-privateui1';
 export const VISION_VERSION = '0.10.21';
 const MODEL_ROOT = 'https://storage.googleapis.com/mediapipe-models';
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -26,6 +26,10 @@ export function extractFocusSignals(faceResult, poseResult, handResult, objects,
   const pose = poseResult.landmarks?.[0];
   const body = Boolean(pose && [11, 12].every(i => visiblePoint(pose[i])));
   const faceValid = Boolean(face && [1, 33, 263].every(i => finitePoint(face[i])) && distance(face[33],face[263]) > .01);
+  const headPoints = (pose || []).slice(0,11).filter(visiblePoint);
+  const headPresent = faceValid || body && headPoints.length >= 2;
+  const headPosition = faceValid ? [face[1].x,face[1].y] : headPoints.length >= 2 ?
+    [headPoints.reduce((sum,p)=>sum+p.x,0)/headPoints.length,headPoints.reduce((sum,p)=>sum+p.y,0)/headPoints.length] : null;
   const eyesValid = faceValid && [133,362,160,158,153,144,385,387,373,380].every(i => finitePoint(face[i]));
   const irisValid = faceValid && [133,362,468,473].every(i => finitePoint(face[i]));
   const hands = (handResult.landmarks || []).flatMap(hand => hand.filter(finitePoint));
@@ -60,7 +64,7 @@ export function extractFocusSignals(faceResult, poseResult, handResult, objects,
   const activityVector = faceValid ? [head.x, head.y, ...gaze, ...headDirection, ...verticalGaze] : null;
   const studyPoints = [pose?.[15], pose?.[16], ...(handResult.landmarks || []).map(hand => hand[8])].map(p =>
     visiblePoint(p) ? { x: p.x, y: p.y } : null);
-  return { reliable: true, face: faceValid, body, eyesClosed, gazeValid, phoneUse, phoneEvidence,
+  return { reliable: true, face: faceValid, head: headPresent, headPosition, body, eyesClosed, gazeValid, phoneUse, phoneEvidence,
     studyActivity: false, studyContext, studyPoints, activityVector };
 }
 
@@ -142,7 +146,7 @@ export async function createCameraInference(vision, cocoSsd, tf, canvas, { light
     }
     if (!accelerated) await tf.setBackend('cpu');
     await tf.ready();
-    const objects = await cocoSsd.load({ base: light ? 'lite_mobilenet_v2' : 'mobilenet_v2' });
+    const objects = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
     resources.push(objects);
     const identity=identityFactory?await identityFactory():null;
     if(identity)resources.push(identity);
@@ -159,6 +163,7 @@ export async function createCameraInference(vision, cocoSsd, tf, canvas, { light
     const faceContext = faceInput.getContext('2d');
     let closeup = null, lastBounds = null, lastFaceTime = -Infinity, scan = 0;
     return {
+      resetFaceVerification(){identity?.resetVerification?.();},
       confirmFaceCapture(){return identity?.confirmCapture?.()||false;},
       async detect(source, time, epoch = 0) {
         const startedAt = performance.now();
@@ -168,9 +173,11 @@ export async function createCameraInference(vision, cocoSsd, tf, canvas, { light
         let faceResult = face.detectForVideo(source, time);
         const fullFaceMs = performance.now() - began;
         const bounds = faceBounds(faceResult), count = faceResult.faceLandmarks?.length || 0;
-        if(time-poseTime>=400){began=performance.now();poseResult=pose.detectForVideo(source,time);poseTime=time;modelMs.pose=performance.now()-began;}
+        const needsFaceSearch=count<2&&(!bounds||Math.max(bounds.width*width,bounds.height*height)<Math.min(width,height)*.22);
+        // Body pose is needed for face search, but not for a clearly visible enrollment face.
+        if(time-poseTime>=400&&(!identity?.enrolling||needsFaceSearch)){began=performance.now();poseResult=pose.detectForVideo(source,time);poseTime=time;modelMs.pose=performance.now()-began;}
         const faceStarted = performance.now();
-        if (count < 2 && (!bounds || Math.max(bounds.width * width, bounds.height * height) < Math.min(width, height) * .22)) {
+        if (needsFaceSearch) {
           if (!closeup) {
             closeup = await vision.FaceLandmarker.createFromOptions(files, {
               ...options('face_landmarker/face_landmarker/float16/1/face_landmarker.task'), runningMode: 'IMAGE', numFaces: 2,
@@ -193,19 +200,28 @@ export async function createCameraInference(vision, cocoSsd, tf, canvas, { light
           const index=identityState.faceIndex;
           faceResult={...faceResult,faceLandmarks:[faceResult.faceLandmarks[index]],faceBlendshapes:[faceResult.faceBlendshapes?.[index]]};
         }
-        if(time-handTime>=400){began=performance.now();handResult=hand.detectForVideo(source,time);handTime=time;modelMs.hand=performance.now()-began;}
+        const scanning=identityState?.enrolled===false;
+        if(!scanning&&time-handTime>=400){began=performance.now();handResult=hand.detectForVideo(source,time);handTime=time;modelMs.hand=performance.now()-began;}
         // ImageData is supported by TF.js fromPixels in workers and the main thread.
-        if (phoneRedesign && !objectPending) {
+        if (!scanning && phoneRedesign && !objectPending) {
           const region=phoneScheduler.next(width,height,time,phoneTracker.targets(time),phoneSearchRegions(poseResult,handResult));
           const scale=Math.min(1,640/Math.max(region.width*width,region.height*height));
           const cropWidth=Math.max(1,Math.round(region.width*width*scale)),cropHeight=Math.max(1,Math.round(region.height*height*scale));
           input.width=cropWidth;input.height=cropHeight;
           context.drawImage(source,region.x*width,region.y*height,region.width*width,region.height*height,0,0,cropWidth,cropHeight);
           const pixels=context.getImageData(0,0,cropWidth,cropHeight),objectStarted=performance.now();
+          const palms=(handResult.landmarks||[]).map(hand=>[0,1,2,5,9,13,17].map(i=>hand[i]).filter(finitePoint)).filter(points=>points.length>=5).map(points=>{
+            const xs=points.map(p=>p.x),ys=points.map(p=>p.y),x=Math.min(...xs),y=Math.min(...ys);
+            return [x,y,Math.max(...xs)-x,Math.max(...ys)-y];
+          });
           const publish=(found,status)=>{
             if(closed||phoneEpoch!==epoch)return;
             const completedAt=time+performance.now()-startedAt;
-            const candidates=found.filter(o=>o.class==='cell phone').map(o=>({score:o.score,box:[region.x+o.bbox[0]/cropWidth*region.width,region.y+o.bbox[1]/cropHeight*region.height,o.bbox[2]/cropWidth*region.width,o.bbox[3]/cropHeight*region.height]}));
+            const candidates=found.filter(o=>o.class==='cell phone').map(o=>{
+              const box=[region.x+o.bbox[0]/cropWidth*region.width,region.y+o.bbox[1]/cropHeight*region.height,o.bbox[2]/cropWidth*region.width,o.bbox[3]/cropHeight*region.height];
+              const palmOverlap=Math.max(0,...palms.map(p=>Math.max(0,Math.min(box[0]+box[2],p[0]+p[2])-Math.max(box[0],p[0]))*Math.max(0,Math.min(box[1]+box[3],p[1]+p[3])-Math.max(box[1],p[1]))/Math.max(.000001,box[2]*box[3])));
+              return {...phoneCandidateEvidence(pixels,o,{palmOverlap}),box};
+            });
             latestPhone={version:2,id:++observationId,frameId:time,observedAt:time,completedAt,region,candidates,status,epoch};
             phoneTracker.observe(latestPhone,completedAt);
             phoneLagCount=completedAt-time>PHONE_LIMITS.maxAge?phoneLagCount+1:0;
@@ -219,7 +235,7 @@ export async function createCameraInference(vision, cocoSsd, tf, canvas, { light
             if(closed||phoneEpoch!==epoch)return;
             try {publish(await objects.detect(pixels,30,PHONE_LIMITS.seed),'ok');}catch {publish([],'error');}
           }).finally(()=>{modelMs.objects=performance.now()-objectStarted;objectPending=null;});
-        } else if (!phoneRedesign && !objectPending && time - objectTime >= 800) {
+        } else if (!scanning && !phoneRedesign && !objectPending && time - objectTime >= 800) {
           objectTime=time;
           const objectScale = Math.min(1, 640 / Math.max(width, height));
           const fullWidth = Math.max(1, Math.round(width * objectScale)), fullHeight = Math.max(1, Math.round(height * objectScale));

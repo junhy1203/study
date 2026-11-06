@@ -1,67 +1,87 @@
-import {authReady,getAuthUser,reauthenticateFaceAccount} from './auth.js?v=20261022-1';
-import {serverCallable} from './server-client.js?v=20261024-selfhost1';
+import {authReady,getAuthUser,reauthenticateFaceAccount} from './auth.js?v=20261104-1';
+import {serverCallable} from './server-client.js?v=20261103-privateui1';
 import {faceStore,faceRecordKey,createBrowserFaceKeys,clearLegacyFaceProfile,deleteLocalFaceAccount} from './face-storage.js';
-import {signFace,hashFace} from './face-crypto.js';
-import {FACE_POLICY,FACE_ORIGIN,studyNonce} from './functions/face-protocol.js';
+import {signFace,hashFace} from './face-crypto.js?v=20261103-privateui1';
+import {FACE_POLICY,FACE_ORIGIN,FACE_SCHEMA,FACE_PREPROCESS,studyNonce} from './functions/face-protocol.js?v=20261103-privateui1';
+import {SCAN_COUNT} from './face-scan.js?v=20261104-1';
+import {updateScanRing,stopScanRing,scanArrowGuidance} from './face-scan-guide.js?v=20261105-turn1';
 
 let session=null,dialog=null,previousFocus=null,expiryTimer=null,hiddenTimer=null,progressTimer=null,epoch=0,verified=false;
 let phase='SIGNED_OUT',lastProgress=-1,lastProgressAt=0,profileReady=false;
 let channel;
-let previewFrame=null,previewFraming=null;
 const element=(tag,text,className)=>{const node=document.createElement(tag);if(text)node.textContent=text;if(className)node.className=className;return node;};
 const invoke=async(name,data)=>{const response=await serverCallable(name) (data);return response.data;};
 const broadcast=()=>{channel??=typeof BroadcastChannel==='function'?new BroadcastChannel('study-face-policy-v1'):null;return channel;};
-function ensureStyle(){if(!document.querySelector('[data-face-style]')){const link=document.createElement('link');link.rel='stylesheet';link.href=new URL('./face-enrollment.css',import.meta.url).href;link.dataset.faceStyle='';document.head.append(link);}}
-function closeDialog(){clearInterval(progressTimer);progressTimer=null;cancelAnimationFrame(previewFrame);previewFrame=null;previewFraming=null;dialog?.close();dialog?.remove();dialog=null;previousFocus?.focus();previousFocus=null;}
+function ensureStyle(){if(!document.querySelector('[data-face-style]')){const link=document.createElement('link');link.rel='stylesheet';link.href=new URL('./face-enrollment.css?v=20261105-turn1',import.meta.url).href;link.dataset.faceStyle='';document.head.append(link);}}
+function closeDialog(){clearInterval(progressTimer);progressTimer=null;stopScanRing(dialog?.querySelector('.face-ring'));dialog?.close();dialog?.remove();dialog=null;previousFocus?.focus();previousFocus=null;}
 function setPhase(value,label) {
   phase=value;
   const status=dialog?.querySelector('[data-face-status]');
   if(status&&status.textContent!==label)status.textContent=label;
   if(dialog)dialog.dataset.phase=value;
-  const cancel=dialog?.querySelector('[data-face-cancel]');if(cancel)cancel.disabled=value==='ENROLLMENT_COMMITTING';
+  const cancel=dialog?.querySelector('[data-face-cancel]');if(cancel){cancel.disabled=value==='ENROLLMENT_COMMITTING';cancel.hidden=Boolean(session?.ticket);}
   const capture=dialog?.querySelector('[data-face-capture]');if(capture){capture.disabled=value==='ENROLLMENT_COMMITTING'||capture.dataset.capturing==='true';if(['VERIFYING','VERIFIED'].includes(value))capture.hidden=true;}
 }
 function makeDialog({enrolling=false}={}){
   ensureStyle();closeDialog();previousFocus=document.activeElement;
   dialog=element('dialog',null,'face-enrollment');dialog.setAttribute('aria-labelledby','face-enrollment-title');
   dialog.append(element('h2',enrolling?'얼굴 등록':'계정 재인증'));dialog.firstChild.id='face-enrollment-title';
-  dialog.append(element('p',enrolling?'계정 확인 → 촬영 준비 → 얼굴 등록 → 저장 완료':'계정 재인증 → 기존 얼굴로 확인 → 학습 시작','face-steps'));
+  dialog.append(element('p',enrolling?'정면 확인 → 고개 움직이기 → 등록 완료':'계정 재인증 → 기존 얼굴로 확인 → 학습 시작','face-steps'));
   const account=element('p',getAuthUser()?.email||'','face-account');dialog.append(account);
   const status=element('p','계정을 확인하고 있습니다.');status.dataset.faceStatus='';status.setAttribute('role','status');status.setAttribute('aria-live','polite');dialog.append(status);
   const cancel=element('button','취소');cancel.type='button';cancel.dataset.faceCancel='';
   cancel.addEventListener('click',()=>lockFaceSession('얼굴 확인을 취소했습니다.'));
-  dialog.addEventListener('cancel',event=>{event.preventDefault();if(phase!=='ENROLLMENT_COMMITTING')lockFaceSession('얼굴 확인을 취소했습니다.');});
+  dialog.addEventListener('cancel',event=>{event.preventDefault();if(!session?.ticket&&phase!=='ENROLLMENT_COMMITTING')lockFaceSession('얼굴 확인을 취소했습니다.');});
   dialog.append(cancel);document.body.append(dialog);dialog.showModal();return dialog;
 }
 function addPreview(){
   if(!dialog||dialog.querySelector('.face-preview'))return;
-  const guide=element('div',null,'face-preview'),video=element('video');video.autoplay=true;video.muted=true;video.playsInline=true;video.setAttribute('aria-hidden','true');guide.append(video);
-  const canvas=element('canvas');canvas.width=canvas.height=224;canvas.setAttribute('aria-hidden','true');guide.append(canvas);
-  const ring=element('div',null,'face-ring');ring.setAttribute('role','progressbar');ring.setAttribute('aria-label','얼굴 등록 진행률');ring.setAttribute('aria-valuemin','0');ring.setAttribute('aria-valuemax','12');ring.setAttribute('aria-valuenow','0');guide.append(ring);
-  const directions=element('p','정면 ○ · 왼쪽 ○ · 오른쪽 ○ · 위 ○ · 아래 ○','face-directions');directions.dataset.faceDirections='';
-  dialog.insertBefore(guide,dialog.querySelector('[data-face-cancel]'));dialog.insertBefore(directions,dialog.querySelector('[data-face-cancel]'));
-  const hint=element('p','크기·위치는 자동으로 맞춥니다. 안내된 방향으로 고개를 돌린 뒤 확인 버튼을 누르세요. 촬영 중에는 잠시 그대로 있어 주세요.','face-preview-hint');dialog.insertBefore(hint,dialog.querySelector('[data-face-cancel]'));
-  const capture=element('button','자세 확인 · 촬영');capture.type='button';capture.dataset.faceCapture='';capture.disabled=true;capture.hidden=!session?.ticket;
-  capture.addEventListener('click',()=>{if(capture.disabled)return;capture.disabled=true;capture.dataset.capturing='true';window.dispatchEvent(new Event('study:face-capture'));});
-  dialog.insertBefore(capture,dialog.querySelector('[data-face-cancel]'));
+  dialog.dataset.scan='abstract';
+  const guide=element('div',null,'face-preview'),center=element('div',null,'face-scan-center');
+  const symbol=element('div',null,'face-scan-symbol');symbol.setAttribute('aria-hidden','true');
+  symbol.dataset.mode='align';symbol.dataset.tone='hold';
+  symbol.innerHTML='<svg viewBox="0 0 80 80" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"><g class="face-arrow-single"><path d="M40 66V14M18 36l22-22 22 22"/></g><g class="face-arrow-align"><path d="M40 10v60M10 40h60M31 19l9-9 9 9M31 61l9 9 9-9M19 31l-9 9 9 9M61 31l9 9-9 9"/></g></svg>';
+  const live=element('p','얼굴을 가운데로 맞춰 주세요','face-scan-live');live.dataset.faceScanLive='';
+  const count=element('strong','0%','face-scan-percent');count.dataset.faceScanPercent='';
+  const detail=element('p',`0 / ${SCAN_COUNT} 각도 수집`,'face-scan-count');detail.dataset.faceScanCount='';
+  center.append(symbol,live,count,detail);guide.append(center);
+  const ring=element('div',null,'face-ring');ring.setAttribute('role','progressbar');ring.setAttribute('aria-label','얼굴 등록 진행률');ring.setAttribute('aria-valuemin','0');ring.setAttribute('aria-valuemax',String(SCAN_COUNT));ring.setAttribute('aria-valuenow','0');guide.append(ring);updateScanRing(ring);
+  dialog.insertBefore(guide,dialog.querySelector('[data-face-cancel]'));
+  const hint=element('p','가운데 큰 화살표를 따라 얼굴 위치를 맞춘 뒤, 안내 방향으로 고개를 천천히 돌려 주세요. 바깥 빨간 표시는 더 보여 줄 방향이에요.','face-preview-hint');dialog.insertBefore(hint,dialog.querySelector('[data-face-cancel]'));
+  const privacy=element('p','카메라 사용 중 · 얼굴 영상은 화면에 표시하지 않아요','face-scan-camera-note');dialog.insertBefore(privacy,dialog.querySelector('[data-face-cancel]'));
+  const capture=element('button','자세 확인 · 촬영');capture.type='button';capture.dataset.faceCapture='';capture.disabled=true;capture.hidden=true;
+  capture.addEventListener('click',()=>{if(capture.disabled)return;capture.disabled=true;capture.dataset.capturing='true';window.dispatchEvent(new Event('study:face-capture'));});dialog.insertBefore(capture,dialog.querySelector('[data-face-cancel]'));
 }
-export function attachFacePreview(stream){
-  addPreview();const video=dialog?.querySelector('video'),canvas=dialog?.querySelector('canvas');if(!video||!canvas)return;
-  video.srcObject=stream;void video.play().catch(()=>{});cancelAnimationFrame(previewFrame);
-  const context=canvas.getContext('2d');
-  let lastVideoTime=-1;
-  const draw=()=>{
-    if(!dialog||!canvas.isConnected)return;
-    if(video.readyState>=2&&video.currentTime!==lastVideoTime){
-      lastVideoTime=video.currentTime;
-      context.setTransform(1,0,0,1,0,0);context.fillStyle='#808080';context.fillRect(0,0,224,224);
-      if(previewFraming){const {transform:t,width,height}=previewFraming;context.setTransform(t[0]*width/video.videoWidth,t[1]*width/video.videoWidth,t[2]*height/video.videoHeight,t[3]*height/video.videoHeight,t[4],t[5]);}
-      else{const scale=224/Math.min(video.videoWidth,video.videoHeight);context.setTransform(scale,0,0,scale,(224-video.videoWidth*scale)/2,(224-video.videoHeight*scale)/2);}
-      context.drawImage(video,0,0);context.setTransform(1,0,0,1,0,0);
-    }
-    previewFrame=requestAnimationFrame(draw);
-  };draw();
+function updateScanFeedback(data={}){
+  const guide=dialog?.querySelector('.face-preview');if(!guide)return;
+  const held=data.state==='QUALITY_HOLD',feedback=held?{...data,orientation:null,alignment:null}:data;
+  guide.scanFeedback={...guide.scanFeedback,...feedback};
+  if(data.alignment&&data.type==='face-scan-direction')guide.scanFeedback.state='ENROLLING';
+  const ring=guide.querySelector('[role="progressbar"]');updateScanRing(ring,feedback);
+  const symbol=guide.querySelector('.face-scan-symbol'),live=guide.querySelector('[data-face-scan-live]');
+  const guidance=scanArrowGuidance(guide.scanFeedback);
+  symbol.dataset.mode=guidance.mode;symbol.dataset.tone=guidance.tone;
+  if(guidance.mode==='direction'){
+    const previous=symbol.arrowAngle||0;
+    // Keep angles continuous across -180/180 so the transition takes the short turn.
+    const delta=((guidance.angle-previous+180)%360+360)%360-180;
+    symbol.arrowAngle=previous+delta;
+    symbol.querySelector('.face-arrow-single').style.transform=`rotate(${symbol.arrowAngle}deg)`;
+  }
+  if(live.textContent!==guidance.label)live.textContent=guidance.label;
+  guide.dataset.tracking=guidance.tone==='hold'?'hold':'active';
+  if(data.progress!==undefined){
+    const total=data.total||SCAN_COUNT,progress=Math.max(0,Math.min(total,data.progress));
+    ring.setAttribute('aria-valuenow',String(progress));ring.setAttribute('aria-valuetext',`${total}개 중 ${progress}개 각도 수집`);
+    guide.querySelector('[data-face-scan-percent]').textContent=`${Math.round(progress/total*100)}%`;
+    guide.querySelector('[data-face-scan-count]').textContent=`${progress} / ${total} 각도 수집`;
+    if(progress>Number(guide.dataset.progress||0)&&!matchMedia('(prefers-reduced-motion: reduce)').matches)symbol.animate([{opacity:.5},{opacity:1}],{duration:300});
+    guide.dataset.progress=String(progress);
+  }
 }
+// Camera capture and inference remain in the camera controller and Worker.
+// Registration never attaches the stream to a display element.
+export function attachFacePreview(){addPreview();}
 export function faceWorkerContext(){return session;}
 export function faceSessionState(){return {phase,verified,ready:profileReady,profileId:session?.binding?.profileId};}
 export function waitForFaceSessionReady(){
@@ -139,8 +159,11 @@ export async function prepareFaceSession({replace=false}={}){
   const status=await invoke('getFaceEnrollmentStatus',{installationId});
   if(!status.enabled)throw new Error('얼굴 보안 키 설정이 필요합니다. 관리자에게 문의해 주세요.');
   let record=status.active?.installationId===installationId?await faceStore('profiles','readonly',faceRecordKey(uid,installationId,status.active.profileId)):null;
+  const currentProfile=value=>value?.binding?.schemaVersion===FACE_SCHEMA&&value.binding.preprocessVersion===FACE_PREPROCESS;
+  const needsNewScan=Boolean(record&&!currentProfile(record));if(needsNewScan)record=null;
   const pendingId=await faceStore('settings','readonly',`${keyId}:pending`);
-  const pending=pendingId?await faceStore('profiles','readonly',faceRecordKey(uid,installationId,pendingId)):null;
+  const pendingRecord=pendingId?await faceStore('profiles','readonly',faceRecordKey(uid,installationId,pendingId)):null;
+  const pending=currentProfile(pendingRecord)?pendingRecord:null;
   // Server confirmation wins over a lost commit response. Uncommitted candidates never unlock.
   if(!record&&pending?.binding.profileId===status.active?.profileId)record=pending;
   const recovering=!replace&&Boolean(keys&&pending&&pending.binding.profileId===status.pending?.profileId&&pending.ticketId===status.pending.id);
@@ -148,8 +171,13 @@ export async function prepareFaceSession({replace=false}={}){
   if(enrolling)record=null;
   if(!keys){keys=await createBrowserFaceKeys();await faceStore('keys','readwrite',keyId,keys);keys=await faceStore('keys','readonly',keyId);if(!keys?.signingKey||!keys.wrappingKey)throw new Error('이 브라우저는 보안 키 저장을 지원하지 않습니다.');}
   let grant=status.grant;
-  if(enrolling||!grant)makeDialog({enrolling});
-  if(enrolling||!grant)grant=await askReauthentication({enrolling,replace:Boolean(status.active),keys,uid,installationId});
+  if(enrolling){makeDialog({enrolling});grant=await askReauthentication({enrolling,replace:Boolean(status.active),keys,uid,installationId});}
+  else if(!grant||grant.expiresAtMs<253402300799000){
+    const challenge=await invoke('beginDailyFaceAuth',{installationId,publicKey:keys.publicKey,enrollmentOnly:false});
+    const signature=await signFace(keys,'daily',uid,installationId,challenge.challengeId);
+    const result=await invoke('completeDailyFaceAuth',{installationId,challengeId:challenge.challengeId,signature});
+    grant={...result.grant,serverNowMs:result.serverNowMs};
+  }
   if(attempt!==epoch||getAuthUser()?.uid!==uid)throw new Error('얼굴 확인이 취소되었습니다.');
   if(recovering){
     const signature=await signFace(keys,'commit',uid,installationId,`${pending.ticketId}:${status.pending.envelopeHash}`);
@@ -166,14 +194,14 @@ export async function prepareFaceSession({replace=false}={}){
     ({ticket}=await invoke('beginFaceEnrollment',{installationId,idempotencyKey,signature}));
   }
   session={uid,installationId,keys,grant,record,ticket,binding:record?.binding||ticket.binding};
-  if(enrolling){setPhase('ENROLLING','정면을 바라본 뒤 자세 확인 · 촬영 버튼을 눌러 주세요');addPreview();}
+  if(enrolling){setPhase('ENROLLING',needsNewScan?'새 영상 3D 방식으로 다시 등록합니다. 정면을 잠시 바라봐 주세요':'정면을 잠시 바라봐 주세요');addPreview();}
   else{closeDialog();setPhase('PROFILE_LOADING','학습 화면에서 얼굴을 확인합니다.');}
   lastProgressAt=performance.now();lastProgress=-1;
-  progressTimer=setInterval(()=>{if(dialog&&phase==='ENROLLING'&&performance.now()-lastProgressAt>45000)setPhase('ENROLLING','촬영이 진행되지 않습니다. 조명·거리·카메라 속도를 확인하거나 취소 후 다시 시도해 주세요. 고개를 움직이기 어렵다면 관리자에게 문의해 주세요.');},5000);
+  progressTimer=setInterval(()=>{if(dialog&&phase==='ENROLLING'&&performance.now()-lastProgressAt>45000)setPhase('ENROLLING','진행률은 유지됩니다. 조명을 확인하고 안내된 방향으로 조금씩 천천히 움직여 주세요.');},5000);
   const now=performance.now(),serverNowMs=grant.serverNowMs||status.serverNowMs,duration=grant.expiresAtMs-serverNowMs;
   session.serverNowMs=serverNowMs;session.monotonicStart=now;
   session.deadline=now+Math.max(0,duration);
-  clearTimeout(expiryTimer);expiryTimer=setTimeout(()=>lockFaceSession('날짜가 바뀌었습니다. 오늘의 계정을 다시 인증해 주세요.'),Math.max(0,duration));
+  clearTimeout(expiryTimer);expiryTimer=null;
   broadcast()?.postMessage({uid,event:'generation',profileId:session.binding.profileId});
   return session;
 }
@@ -186,22 +214,27 @@ export async function handleFaceWorkerRPC(action,data){
   return result;
 }
 export function handleFaceWorkerEvent(data){
+  if(data.type==='face-scan-direction'){
+    if(session)updateScanFeedback(data);return;
+  }
+  // Close bitmaps from a previously cached Worker without ever displaying them.
+  if(data.type==='face-scan-mesh'){data.bitmap?.close?.();return;}
   if(!session)return;
-  if(data.type==='face-framing'){previewFraming=data.framing;return;}
+  if(data.type==='face-framing')return;
   if(data.type==='face-progress'){
     if(data.progress!==undefined&&data.progress!==lastProgress){lastProgress=data.progress;lastProgressAt=performance.now();}
     setPhase(data.state,data.label||'얼굴 정보를 안전하게 저장하고 있어요');
     const capture=dialog?.querySelector('[data-face-capture]');
     if(capture){if(data.manualCapture!==undefined)capture.hidden=!data.manualCapture;if(data.canCapture!==undefined){capture.dataset.capturing=String(!data.canCapture);capture.disabled=!data.canCapture||data.state==='ENROLLMENT_COMMITTING';}if(data.captureLabel)capture.textContent=data.captureLabel;}
-    const ring=dialog?.querySelector('[role="progressbar"]');if(ring&&data.progress!==undefined){ring.setAttribute('aria-valuenow',String(data.progress));ring.style.setProperty('--face-progress',String(data.progress/12));}
-    const directions=dialog?.querySelector('[data-face-directions]');if(directions&&data.counts)directions.textContent=['정면','왼쪽','오른쪽','위','아래'].map((label,i)=>`${label} ${data.counts[i]>=(i?2:4)?'✓':'○'}`).join(' · ');
+    if(dialog&&data.direction)dialog.dataset.direction=data.direction;
+    updateScanFeedback(data);
   }
   if(data.type==='face-unlocked'){session.binding=data.binding;profileReady=true;setPhase('READY','학습 준비가 완료됐습니다.');closeDialog();window.dispatchEvent(new Event('study:face-ready'));}
   if(data.type==='face-verified'&&!verified){verified=true;setPhase('VERIFIED','✓ 얼굴 확인이 완료됐어요');window.dispatchEvent(new Event('study:face-verified'));setTimeout(()=>{if(verified)closeDialog();},500);}
 }
 export async function faceStudyAuthorization(data){
   const current=session;
-  if(!current||!profileReady||getAuthUser()?.uid!==current.uid||performance.now()>=current.deadline)throw new Error('오늘의 계정 인증과 얼굴 등록을 완료해 주세요.');
+  if(!current||!profileReady||!verified||getAuthUser()?.uid!==current.uid||performance.now()>=current.deadline)throw new Error('얼굴 등록과 최초 얼굴 인증을 완료해 주세요.');
   const faceAuthorization={installationId:current.installationId,profileId:current.binding.profileId,generation:current.binding.generation,grantId:current.grant.id,issuedAt:Math.floor(current.serverNowMs+performance.now()-current.monotonicStart)};
   faceAuthorization.signature=await signFace(current.keys,'study',current.uid,current.installationId,studyNonce({...data,faceAuthorization}));return faceAuthorization;
 }
@@ -217,6 +250,6 @@ export async function deleteFaceEnrollment(){
 window.addEventListener('study:auth-changed',()=>{if(session&&getAuthUser()?.uid!==session.uid){broadcast()?.postMessage({event:'logout',uid:session.uid});lockFaceSession('계정이 변경되었습니다.',{remote:true});}});
 window.addEventListener('pagehide',()=>lockFaceSession('학습 화면이 닫혔습니다.'));
 window.addEventListener('study:before-logout',()=>{if(session){broadcast()?.postMessage({event:'logout',uid:session.uid});lockFaceSession('로그아웃했습니다.',{remote:true});}});
-document.addEventListener('visibilitychange',()=>{clearTimeout(hiddenTimer);if(document.hidden)hiddenTimer=setTimeout(()=>lockFaceSession('장시간 자리를 비워 얼굴 확인을 잠갔습니다.'),300000);else if(session&&performance.now()>=session.deadline)lockFaceSession('오늘의 계정을 다시 인증해 주세요.');});
+document.addEventListener('visibilitychange',()=>{clearTimeout(hiddenTimer);if(document.hidden&&!session?.ticket)hiddenTimer=setTimeout(()=>lockFaceSession('장시간 자리를 비워 얼굴 확인을 잠갔습니다.'),300000);});
 broadcast()?.addEventListener('message',({data})=>{if(session&&data?.uid===session.uid&&(data.event!=='generation'||data.profileId!==session.binding.profileId))lockFaceSession('다른 탭에서 계정 또는 얼굴 등록이 변경되었습니다.');});
 document.addEventListener('click',event=>{if(event.target.closest('[data-face-delete]'))void deleteFaceEnrollment().catch(error=>window.alert(error.message));});

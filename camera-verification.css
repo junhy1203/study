@@ -1,0 +1,9 @@
+.cam-identity-summary{margin:10px 12px;color:#52647c;font-size:12px;text-align:center;font-variant-numeric:tabular-nums}
+.profile-card .account-private-badges{margin-top:8px;gap:6px}.profile-card .account-award{padding:4px 9px}
+.cam-face-gate{display:flex;align-items:center;justify-content:center;gap:12px;margin:12px;padding:16px;border-radius:20px;background:#eff5ff;color:#266bd1;font-size:14px}
+.cam-face-gate[hidden]{display:none}.cam-face-gate-icon{display:grid;place-items:center;width:48px;height:48px;border:3px solid currentColor;border-radius:14px;font-size:36px;animation:face-auth-scan 1.5s ease-in-out infinite}
+.cam-face-gate[data-phase=failed]{color:#c64450;background:#fff0f2}.cam-face-gate[data-phase=failed] .cam-face-gate-icon{animation:face-auth-fail .5s ease-in-out}
+.account-private-badges{display:flex;flex-wrap:wrap;gap:10px}.account-private-badges[hidden]{display:none}.account-award{display:inline-flex;align-items:center;padding:7px 13px;border-radius:999px;border:1px solid #cbcfeb;color:#4f4b91;background:#f2f1ff;font-size:12px;font-weight:700;letter-spacing:.04em}.account-award[data-award=ADMIN]{color:#956311;background:#fff5d9;border-color:#e8cd8c}
+@keyframes face-auth-scan{0%,100%{transform:scale(.94);opacity:.55}50%{transform:scale(1.04);opacity:1}}
+@keyframes face-auth-fail{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-7px)}40%,80%{transform:translateX(7px)}}
+@media(prefers-reduced-motion:reduce){.cam-face-gate-icon{animation:none!important}}

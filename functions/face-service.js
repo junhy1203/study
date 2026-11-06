@@ -29,6 +29,7 @@ const requireProof=(key,purpose,uid,installationId,nonce,signature)=>{
 const currentGrant=(state,installationId,now)=>state?.grant?.installationId===installationId&&state.grant.expiresAtMs>now&&state.grant.policyVersion===FACE_POLICY;
 export async function authorizeFaceStudy(tx,db,uid,data,session=null,now=Date.now()) {
   const state=(await tx.get(db.doc(`faceSecurity/${uid}`))).data(),auth=data?.faceAuthorization,active=state?.active;
+  if(active?.binding?.schemaVersion!==FACE_SCHEMA||active?.binding?.preprocessVersion!==FACE_PREPROCESS)fail('failed-precondition','새 영상 3D 얼굴 등록을 완료해 주세요.');
   if(!active||active.revoked||!auth||!currentGrant(state,active.installationId,now)||state.grant.generation!==active.generation||auth.grantId!==state.grant.id||auth.profileId!==active.profileId||auth.generation!==active.generation||auth.installationId!==active.installationId||!Number.isFinite(auth.issuedAt)||Math.abs(now-auth.issuedAt)>60000||session&&(session.faceProfileId!==active.profileId||session.faceGeneration!==active.generation))fail('failed-precondition','일일 인증과 등록한 얼굴 확인이 필요합니다.');
   requireProof(active.publicKey,'study',uid,active.installationId,studyNonce(data),auth.signature);
   return {faceProfileId:active.profileId,faceGeneration:active.generation,faceAuthUntilMs:state.grant.expiresAtMs,faceLeaseUntilMs:Math.min(now+60000,state.grant.expiresAtMs),verificationType:'face-browser'};
@@ -75,16 +76,16 @@ export function createFaceService({db,kms,projectId,configured=()=>true,clock=Da
       if(action==='completeDailyFaceAuth') {
         const challenge=state.challenge;
         if(!challenge||challenge.id!==data.challengeId||challenge.installationId!==data.installationId)fail('failed-precondition','계정 인증 요청이 만료되었습니다.');
-        recent(token,now,challenge.createdAtMs);
+        const existing=active&&!active.revoked&&!challenge.enrollmentOnly&&active.installationId===data.installationId;
+        if(!existing)recent(token,now,challenge.createdAtMs);
         const key=active&&!active.revoked&&!challenge.enrollmentOnly&&active.installationId===data.installationId?active.publicKey:challenge.publicKey;
         requireProof(key,'daily',uid,data.installationId,challenge.id,data.signature);
-        state.grant={id:randomUUID(),installationId:data.installationId,generation:active?.installationId===data.installationId&&!active.revoked&&!challenge.enrollmentOnly?active.generation:0,publicKey:challenge.publicKey,authTime:token.auth_time,policyVersion:FACE_POLICY,expiresAtMs:faceDayEnd(now)};
+        state.grant={id:randomUUID(),installationId:data.installationId,generation:existing?active.generation:0,publicKey:challenge.publicKey,authTime:token.auth_time,policyVersion:FACE_POLICY,expiresAtMs:253402300799000};
         state.challenge=null;
         return save({grant:state.grant,serverNowMs:now});
       }
       if(action==='beginFaceEnrollment') {
         grant();recent(token,now);
-        if(state.registrations.length>=3)fail('resource-exhausted','24시간 내 얼굴 등록은 3회까지 가능합니다. 관리자에게 문의해 주세요.');
         requireProof(state.grant.publicKey,'enroll',uid,data.installationId,state.grant.id,data.signature);
         if(!id(data.idempotencyKey))fail('invalid-argument','등록 요청 식별자가 올바르지 않습니다.');
         if(state.ticket?.idempotencyKey===data.idempotencyKey)return save({ticket:state.ticket});
@@ -120,6 +121,7 @@ export function createFaceService({db,kms,projectId,configured=()=>true,clock=Da
       }
       if(action==='beginFaceUnlock') {
         grant();
+        if(active?.binding?.schemaVersion!==FACE_SCHEMA||active?.binding?.preprocessVersion!==FACE_PREPROCESS)fail('failed-precondition','새 영상 3D 얼굴 등록을 완료해 주세요.');
         if(!active||active.revoked||active.installationId!==data.installationId||active.generation!==state.grant.generation||active.profileId!==data.profileId)fail('failed-precondition','현재 브라우저의 활성 얼굴 등록이 없습니다.');
         state.unlock={id:randomUUID(),expiresAtMs:now+60000,envelopeHash:active.envelopeHash,generation:active.generation};
         return save({nonce:state.unlock.id,binding:active.binding,expiresAtMs:state.grant.expiresAtMs,serverNowMs:now});

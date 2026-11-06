@@ -3,6 +3,7 @@ import {FieldValue} from './platform-store.js';
 import {HttpsError} from './platform-http.js';
 import {schoolRoomInfo} from './integrations-domain.js';
 import {changeRoom,roomDirectory,syncRoom} from './room-service.js';
+import {friendHighlights} from './friend-highlights.js';
 
 export const ROOM_LIMIT = 12;
 const fail = (code, message) => {throw new HttpsError(code,message);};
@@ -91,6 +92,15 @@ export async function socialSnapshot(db,uid,{revision=-1,includeLists=false,list
       const docs=await (collection==='roomInvites'?readInvites():ref.collection(collection).limit(50).get());
       result[collection]=docs.docs.map(doc=>({...doc.data(),id:doc.id}));
     }
+  }
+  if(includeLists&&!listScope){
+    // Refresh visible public profiles in one bounded batch, even when the
+    // friendship revision is unchanged but a friend edited their avatar/bio.
+    const friends=result.friends||(await ref.collection('friends').limit(50).get()).docs.map(doc=>({...doc.data(),id:doc.id}));
+    const visible=friends.filter(row=>typeof row.uid==='string'&&row.uid.length<=128&&!row.uid.includes('/'));
+    const profiles=visible.length?await db.getAll(...visible.map(row=>userRef(db,row.uid))):[];
+    const highlights=await friendHighlights(db,{...profile,uid},visible.map((row,i)=>({uid:row.uid,profile:profiles[i].data()||{}})));
+    result.friends=visible.map((row,i)=>{const profile=profiles[i].data()||{};return {...row,displayName:profile.displayName||row.displayName,avatar:profile.avatar||null,bio:profile.bio||'',friendSummary:highlights.get(row.uid)};});
   }
   if(profile.activeRoomId)result.room=await syncRoom(db,uid,profile.activeRoomId);
   result.serverNowMs=Date.now();

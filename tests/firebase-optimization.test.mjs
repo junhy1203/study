@@ -56,7 +56,7 @@ test('checkpoint cache keeps period reads fresh and reuses finish-only records',
   async function measure(policy){
     let reads=0;
     const profile={studyRevision:4,wordCheckpointRevision:0,schoolId:'school'};
-    const context=vm.createContext({statsRevision:policy,state:{profile,pending:new Set(),failed:new Set()},
+    const context=vm.createContext({focusReceiptEpoch:0,statsRevision:policy,state:{profile,pending:new Set(),failed:new Set()},
       sdk:{doc:()=>null,collection:()=>null,query:()=>null,orderBy(){},limit(){},async getDoc(){reads++;return {data:()=>({})};},async getDocs(){reads+=50;return {docs:Array.from({length:50},()=>({data:()=>({})}))};}},
       db:{},connectedUid:'alice',generation:1,document:{hidden:false},dateKey:()=> '2026-10-24',monday:()=> '2026-10-19',
       readCache:createReadCache({storage:null}),dataRequests:new Map(),visibleDataKeys:()=>new Set(['today','summary','focusTime','ranking','ownRanking','schoolRanking']),paint(){},notice(error){throw error;},errorText:x=>x});

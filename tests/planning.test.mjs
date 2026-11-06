@@ -50,6 +50,13 @@ function fakeDb() {
   return {records,doc,runTransaction(action){const result=queue.then(()=>action({get:ref=>ref.get(),update:(ref,data)=>records.set(ref.path,{...records.get(ref.path),...data})}));queue=result.catch(()=>{});return result;}};
 }
 
+test('vocabulary integration subject cannot be deleted even when it is idle and has no goals',async()=>{
+  const db=fakeDb();db.records.get('users/owner').subjects=[{id:'word',name:'영단어'},{id:'physics',name:'물리'}];
+  await assert.rejects(()=>changePlan(db,'owner','removeSubject',{id:'word'}),/삭제할 수 없/);
+  assert.equal(db.records.get('users/owner').subjects.length,2);
+  await changePlan(db,'owner','removeSubject',{id:'physics'});assert.deepEqual(db.records.get('users/owner').subjects,[{id:'word',name:'영단어'}]);
+});
+
 test('subject and goal writes are owner scoped, deduplicate retries and preserve server-only profile fields',async()=>{
   const db=fakeDb();
   const [a,b]=await Promise.all([changePlan(db,'owner','addSubject',{name:'물리'}),changePlan(db,'owner','addSubject',{name:'물리'})]);

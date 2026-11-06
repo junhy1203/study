@@ -43,6 +43,6 @@ export async function spendFocusTime(db, { uid, purchaseId, itemId, costSeconds 
       spentSeconds: FieldValue.increment(costSeconds), updatedAt: now,
     }, { merge: true });
     transaction.create(receiptRef, { type: 'spend', itemId, seconds: costSeconds, createdAt: now });
-    return { balanceSeconds: balance - costSeconds, alreadySpent: false };
+    return { balanceSeconds: balance - costSeconds, previousBalanceSeconds:balance,spentSeconds:costSeconds,alreadySpent: false };
   });
 }

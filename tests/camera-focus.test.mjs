@@ -7,6 +7,16 @@ import { createFocusTracker, FOCUS_LIMITS } from '../camera-focus.js';
 import { extractFocusSignals, createCameraInference, createStudyMotionTracker, phoneSearchRegion, phoneSearchRegions, createFaceContinuity } from '../camera-inference.js';
 import { focusDebugRows } from '../camera-debug.js';
 import { createIdentityMatcher } from '../camera-identity.js';
+test('developer identity row shows recent owner seconds even after the face disappears',()=>{
+  const tracker=createFocusTracker(),owner={reliable:true,face:true,studyActivity:true,identity:{enrolled:true,matched:true,score:.9}};
+  for(let time=0;time<=10000;time+=1000)tracker.update(owner,time);
+  let row=focusDebugRows(tracker.getDebug()).find(row=>row.key==='identity');
+  assert.equal(row.label,'본인 인증');assert.match(row.text,/최근 1분 30초 본인 인정 10\.0초 · 입장·자리 복귀 시 인증/);
+  tracker.update({...owner,face:false,identity:{enrolled:true,matched:false,status:'missing'}},10000);
+  tracker.update({...owner,face:false,identity:{enrolled:true,matched:false,status:'missing'}},12000);
+  row=focusDebugRows(tracker.getDebug()).find(row=>row.key==='identity');
+  assert.match(row.text,/본인 인정 10\.0초/);assert.match(row.text,/얼굴 미감지/);
+});
 import { decodeStudyObjects } from '../camera-objects.js';
 
 const healthy = { reliable: true, face: true, body: true, eyesClosed: false, gazeValid: true, phoneUse: false, studyActivity: false, activityVector: [.5,.5,.5,.5,0,.4,0,0,0] };
@@ -28,53 +38,50 @@ test('encrypted-profile matcher keeps its owner and requires fresh observations'
   assert.equal(createIdentityMatcher().observe(owner).matched,false);
 });
 
-test('timer keeps running during a ten second identity grace and pauses at its exact boundary',()=>{
+test('short identity mismatches keep timing before the full rolling window is available',()=>{
   const tracker=createFocusTracker(),wrong={...healthy,identity:{matched:false,status:'mismatch',enrolled:true}};
   advance(tracker,{...healthy,identity:{matched:true,status:'matched',enrolled:true}},0,2000);
   for(let t=2200;t<12200;t+=200){const result=tracker.update(wrong,t);assert.equal(result.tracking,true);assert.equal(Boolean(result.identityWarning),false);}
   assert.equal(tracker.update(wrong,12199).tracking,true);
-  const expired=tracker.update(wrong,12200);assert.equal(expired.identityWarning,true);assert.equal(expired.tracking,false);
+  const expired=tracker.update(wrong,12200);assert.equal(Boolean(expired.identityWarning),false);assert.equal(expired.tracking,true);
   const restored=tracker.update({...healthy,identity:{matched:true,status:'matched',enrolled:true}},12400);
-  assert.equal(restored.status,'scanning');assert.equal(Boolean(restored.identityWarning),false);
+  assert.equal(restored.status,'tracking');assert.equal(Boolean(restored.identityWarning),false);
   for(const status of ['enrolling','checking','missing','multiple']){
     const signals={...healthy,face:status!=='missing',identity:{matched:false,status,enrolled:false}};
     assert.equal(createFocusTracker().update(signals,0).tracking,false);
   }
 });
-test('missing faces pause at five seconds while unknown returning faces retain the ten second identity deadline',()=>{
+test('missing faces pause at 1.5 seconds and returning strangers never resume timing',()=>{
   const tracker=createFocusTracker(),owner={...healthy,identity:{matched:true,status:'matched',enrolled:true}};
   const wrong={...healthy,identity:{matched:false,status:'mismatch',enrolled:true}};
   advance(tracker,owner,0,2000);
   const absent={...healthy,face:false,identity:{matched:false,status:'missing',enrolled:true}};
-  assert.equal(advance(tracker,absent,2500,7000).tracking,true);
-  assert.equal(tracker.update(absent,7499).tracking,true);
-  const missing=tracker.update(absent,7500);
+  assert.equal(advance(tracker,absent,2500,3500).tracking,true);
+  assert.equal(tracker.update(absent,3999).tracking,true);
+  const missing=tracker.update(absent,4000);
   assert.equal(missing.tracking,false);assert.equal(missing.status,'paused');assert.equal(missing.reason,'away');
   assert.equal(missing.identityWarning,false);
   assert.equal(tracker.update(wrong,7700).tracking,false);
   assert.equal(advance(tracker,wrong,7900,9500,200).tracking,false);
-  assert.equal(tracker.update(wrong,9700).tracking,true);
-  assert.equal(advance(tracker,wrong,9900,12300,200).tracking,true);
-  const expired=tracker.update(wrong,12500);assert.equal(expired.identityWarning,true);assert.equal(expired.tracking,false);
+  assert.equal(tracker.update(wrong,9700).tracking,false);
+  assert.equal(advance(tracker,wrong,9900,12300,200).tracking,false);
+  const expired=tracker.update(wrong,12500);assert.equal(expired.tracking,false);
 });
-test('only the recognized owner clears a continuous mismatch deadline',()=>{
+test('only the recognized owner passes the initial verification gate',()=>{
   const tracker=createFocusTracker(),owner={...healthy,studyActivity:true,identity:{matched:true,status:'matched',enrolled:true}},wrong={...healthy,studyActivity:true,identity:{matched:false,status:'mismatch',enrolled:true}};
-  advance(tracker,owner,0,2000);advance(tracker,wrong,2200,6000,200);
-  tracker.update({...wrong,identity:{matched:false,status:'checking',enrolled:true}},6200);
-  assert.equal(advance(tracker,wrong,6400,12200,200).identityWarning,true);
-  assert.equal(Boolean(tracker.update(owner,12400).identityWarning),false);
-  assert.equal(advance(tracker,owner,12600,14400,200).tracking,true);
-  assert.equal(advance(tracker,wrong,14600,24400,200).tracking,true);
-  assert.equal(tracker.update(wrong,24600).identityWarning,true);
+  assert.equal(advance(tracker,wrong,0,4000,200).identityWarning,true);
+  assert.equal(tracker.update(owner,5000).tracking,false);
+  assert.equal(tracker.update(owner,5500).verification.required,false);
+  assert.equal(advance(tracker,owner,5700,7700,200).tracking,true);
 });
-for(const loss of [null,{reliable:false},{...healthy,face:false}])test(`missing face observations pause at five seconds before identity expiry: ${JSON.stringify(loss)}`,()=>{
+for(const loss of [null,{reliable:false},{...healthy,face:false}])test(`missing face observations pause at 1.5 seconds before identity expiry: ${JSON.stringify(loss)}`,()=>{
   const tracker=createFocusTracker(),owner={...healthy,identity:{matched:true,status:'matched',enrolled:true}};
   advance(tracker,owner,0,2000);
-  assert.equal(advance(tracker,loss,2200,7000,200).tracking,true);
-  assert.equal(tracker.update(loss,7199).tracking,true);
-  const paused=tracker.update(loss,7200);
+  assert.equal(advance(tracker,loss,2200,3600,200).tracking,true);
+  assert.equal(tracker.update(loss,3699).tracking,true);
+  const paused=tracker.update(loss,3700);
   assert.equal(paused.tracking,false);assert.equal(paused.reason,'away');assert.equal(paused.identityWarning,false);
-  const stillMissing=advance(tracker,loss,7400,12200,200);
+  const stillMissing=advance(tracker,loss,3900,12200,200);
   assert.equal(stillMissing.tracking,false);assert.equal(stillMissing.reason,'away');assert.equal(stillMissing.identityWarning,false);
   assert.equal(tracker.update(owner,12400).tracking,false);
   assert.equal(advance(tracker,owner,12600,14400,200).tracking,true);
@@ -110,20 +117,21 @@ test('missing face grace takes priority even when the identity deadline expires 
   const absent={...wrong,face:false};
   advance(tracker,absent,11200,12200,200);
   assert.equal(tracker.update(absent,12201).identityWarning,false);
-  assert.equal(advance(tracker,absent,12400,16000,200).tracking,true);
-  assert.equal(tracker.update(absent,16199).tracking,true);
-  const paused=tracker.update(absent,16200);
+  assert.equal(advance(tracker,absent,12400,12600,200).tracking,true);
+  assert.equal(tracker.update(absent,12699).tracking,true);
+  const paused=tracker.update(absent,12700);
   assert.equal(paused.tracking,false);assert.equal(paused.reason,'away');
   const returned=tracker.update(wrong,16400);
-  assert.equal(returned.tracking,false);assert.equal(returned.identityWarning,true);
+  assert.equal(returned.tracking,false);assert.equal(returned.identityWarning,false);
 });
-test('learning can start before the first match but an unrecognized face pauses after ten seconds',()=>{
+test('learning cannot start before the first match and failures retry after 1.5 seconds',()=>{
   const tracker=createFocusTracker(),wrong={...healthy,identity:{matched:false,status:'checking',enrolled:true}};
   assert.equal(tracker.update(wrong,0).tracking,false);
-  assert.equal(tracker.update(wrong,2000).tracking,true);
-  assert.equal(advance(tracker,wrong,2200,9800,200).tracking,true);
-  assert.equal(tracker.update(wrong,9999).tracking,true);
-  assert.equal(tracker.update(wrong,10000).identityWarning,true);
+  assert.equal(tracker.update(wrong,2000).tracking,false);
+  assert.equal(tracker.update(wrong,4000).verification.phase,'failed');
+  assert.equal(tracker.update(wrong,5499).verification.phase,'failed');
+  assert.equal(tracker.update(wrong,5500).verification.phase,'scanning');
+  assert.equal(tracker.update(wrong,5500).tracking,false);
 });
 test('idle and gaze observation continue after identity failure pauses the timer',()=>{
   const tracker=createFocusTracker(),wrong={...healthy,identity:{matched:false,enrolled:true,status:'mismatch'}};
@@ -247,7 +255,7 @@ test('idle debug countdown ignores brief movement and resets after sustained mot
 for (const [reason, signals, delay] of [
   ['sleep', { ...healthy, eyesClosed: true }, 4500],
   ['phone', { ...healthy, phoneUse: true }, 750],
-  ['away', { ...healthy, face: false, body: false }, 5000],
+  ['away', { ...healthy, face: false, body: false }, 1500],
 ]) test(`${reason}: stops credit, warns after persistence and automatically recovers`, () => {
   const tracker = createFocusTracker();
   assert.equal(advance(tracker, healthy, 0, 2000).tracking, true);
@@ -488,14 +496,14 @@ test('face loss with visible shoulders uses the same uninterrupted five-second g
   const paused=tracker.update({...healthy,face:false,body:true},7500);
   assert.equal(paused.reason,'away');assert.equal(paused.status,'paused');assert.equal(paused.tracking,false);
 });
-test('brief face losses hold credit without resetting the idle observation clock', () => {
+test('brief head-only observations reset face idle before using the head sleep clock', () => {
   const tracker=createFocusTracker();let state;
   for(let t=0;t<=23000;t+=500){
     const missing=t===10000||t===15000;
-    state=tracker.update({...healthy,face:!missing,body:true},t);
-    if(t>=2000&&t<IDLE_AT)assert.equal(state.tracking,!missing);
+    state=tracker.update({...healthy,face:!missing,head:true,headPosition:[.5,.5],body:true},t);
+    if(t>=2000&&t<IDLE_AT)assert.equal(state.tracking,true);
   }
-  assert.equal(state.reason,'idle');
+  assert.equal(state.reason,null);
 });
 function scene() {
   const face = Array.from({ length: 478 }, () => ({ x: .5, y: .4 }));
@@ -748,7 +756,7 @@ test('legacy: WASM inference preserves 800ms object cadence in standard and ligh
         await engine.detect({width:100,height:100},200);await engine.detect({width:100,height:100},800);
         await new Promise(resolve=>setTimeout(resolve,0));
         assert.equal(first.backend,'wasm');assert.equal(calls.length,2);assert.equal(calls[0][2],.2);
-        assert.equal(base,light?'lite_mobilenet_v2':'mobilenet_v2');
+        assert.equal(base,'lite_mobilenet_v2');
       }finally{engine.close();}
     }
   }finally{if(previous===undefined)delete globalThis.OffscreenCanvas;else globalThis.OffscreenCanvas=previous;}

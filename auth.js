@@ -115,6 +115,7 @@ document.addEventListener('submit', async event => {
   if (!form.reportValidity()) return;
   const data = new FormData(form);
   const mode = form.dataset.authForm;
+  if(mode==='signup'||mode==='login'){message('Google 계정으로 로그인해 주세요.',true);return;}
   const email = String(data.get('email') || '').trim();
   const password = String(data.get('password') || '');
   const displayName = String(data.get('displayName') || '').trim();
@@ -223,4 +224,13 @@ window.addEventListener('focus', refreshVerification);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) void refreshVerification(); });
 window.addEventListener('study:navigated', () => { paintAccount(); void refreshVerification(); });
 window.addEventListener('study:page-prepared', paintAccount);
+
+function requireLogin(){
+  if(!resolved)return;
+  const page=location.pathname.split('/').pop()||'index.html';
+  if(!currentUser&&!['login.html','signup.html','reset-password.html'].includes(page))location.replace('login.html');
+}
+authReady.then(requireLogin);
+window.addEventListener('study:auth-changed',requireLogin);
+window.addEventListener('study:navigated',requireLogin);
 document.addEventListener('DOMContentLoaded', paintAccount);

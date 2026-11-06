@@ -1,5 +1,6 @@
-import {authReady,getAuthUser} from './auth.js?v=20261022-1';
+import {authReady,getAuthUser} from './auth.js?v=20261104-1';
 import {backendConfig} from './backend-config.js?v=20261024-selfhost1';
+import {isNetworkFailure,readableNetworkError} from './network-errors.js?v=20261103-privateui1';
 
 function error(value,status) {
   const result=new Error(value?.message||'자체 서버에 연결하지 못했습니다. 서버 실행 상태를 확인해 주세요.');
@@ -45,12 +46,22 @@ export async function* readLines(response,signal) {
       let index;while((index=pending.indexOf('\n'))>=0){const line=pending.slice(0,index);pending=pending.slice(index+1);if(line.trim())yield revive(JSON.parse(line));}
     }
     if(pending.trim())yield revive(JSON.parse(pending));
-  } finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
+  } catch(cause){throw readableNetworkError(cause);}
+  finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
+}
+async function requestJson(path,data,options,{retryRead=false}={}){
+  for(let attempt=0;;attempt++){
+    try{return await(await request(path,data,options)).json();}
+    catch(cause){
+      if(!options.signal?.aborted&&retryRead&&attempt===0&&isNetworkFailure(cause))continue;
+      throw readableNetworkError(cause);
+    }
+  }
 }
 export function serverCallable(name,options={}) {
   const invoke=async(data={})=>{
     const signal=AbortSignal.timeout(options.timeout||35000);
-    return revive(await(await request(`/api/v1/rpc/${encodeURIComponent(name)}`,{data},{signal})).json());
+    return revive(await requestJson(`/api/v1/rpc/${encodeURIComponent(name)}`,{data},{signal},{retryRead:name==='getFaceEnrollmentStatus'}));
   };
   invoke.stream=async(data={})=>{
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),options.timeout||245000);
@@ -86,9 +97,44 @@ export function query(ref,...constraints) {
   for(const item of constraints)if(item.kind==='order')result.orders.push({field:item.field,direction:item.direction});else result[item.kind]=item.value;
   return result;
 }
-export async function getDoc(ref) {return snapshot(revive(await(await request('/api/v1/read',ref,{signal:AbortSignal.timeout(20000)})).json()));}
+const readQueues=new Map();
+function queueRead(ref){
+  const uid=getAuthUser()?.uid;
+  if(!uid)return request('/api/v1/read',ref,{signal:AbortSignal.timeout(20000)}).then(response=>response.json());
+  let queue=readQueues.get(uid);
+  if(!queue){queue=new Map();readQueues.set(uid,queue);queueMicrotask(()=>flushReads(uid,queue));}
+  const key=JSON.stringify(ref);
+  let entry=queue.get(key);if(!entry){entry={ref,waiters:[]};queue.set(key,entry);}
+  return new Promise((resolve,reject)=>entry.waiters.push({resolve,reject}));
+}
+function flushReads(uid,queue){
+  if(readQueues.get(uid)===queue)readQueues.delete(uid);
+  const entries=[...queue.values()];
+  for(let offset=0;offset<entries.length;offset+=16){
+    const group=entries.slice(offset,offset+16);
+    void (async()=>{
+      const pending=new Set(group.map((_,index)=>index));
+      const accept=(index,result)=>{
+        if(!Number.isInteger(index)||!pending.has(index))throw error();
+        if(getAuthUser()?.uid!==uid)throw error({code:'cancelled',message:'계정이 변경되었습니다.'});
+        pending.delete(index);
+        for(const waiter of group[index].waiters){if(result.error)waiter.reject(error(result.error));else waiter.resolve(result.value);}
+      };
+      try{
+        if(getAuthUser()?.uid!==uid)throw error({code:'cancelled',message:'계정이 변경되었습니다.'});
+        const batch=group.length>1;
+        const signal=AbortSignal.timeout(20000);
+        const response=await request(batch?'/api/v1/read-batch':'/api/v1/read',batch?{reads:group.map(entry=>entry.ref)}:group[0].ref,{signal});
+        if(batch){for await(const item of readLines(response,signal))accept(item.index,item);}
+        else accept(0,{value:await response.json().catch(cause=>{throw readableNetworkError(cause);})});
+        if(pending.size)throw error();
+      }catch(cause){for(const index of pending)for(const waiter of group[index].waiters)waiter.reject(cause);}
+    })();
+  }
+}
+export async function getDoc(ref) {return snapshot(revive(await queueRead(ref)));}
 export async function getDocs(ref) {
-  const result=revive(await(await request('/api/v1/read',ref,{signal:AbortSignal.timeout(20000)})).json());
+  const result=revive(await queueRead(ref));
   return {docs:result.docs.map(snapshot)};
 }
 export function onSnapshot(ref,callback,onError=()=>{}) {

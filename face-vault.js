@@ -1,7 +1,7 @@
 // Imported in the inference Worker. Plain descriptors never enter the UI thread.
 import {faceStore,faceRecordKey} from './face-storage.js';
-import {encryptFaceSamples,decryptFaceSamples,signFace,hashFace} from './face-crypto.js';
-import {faceAAD} from './functions/face-protocol.js';
+import {encryptFaceSamples,decryptFaceSamples,signFace,hashFace} from './face-crypto.js?v=20261103-privateui1';
+import {faceAAD} from './functions/face-protocol.js?v=20261103-privateui1';
 
 export function createFaceVault(context,rpc,notify=()=>{}) {
   let record=context.record,ticket=context.ticket,closed=false,candidate=null;
@@ -24,7 +24,8 @@ export function createFaceVault(context,rpc,notify=()=>{}) {
   return {
     async load(){return ticket?null:unlock();},
     async save(samples){
-      const progress=label=>notify({type:'face-progress',state:'ENROLLMENT_COMMITTING',progress:12,manualCapture:false,label});
+      const count=samples.samples?.length||samples.length;
+      const progress=label=>notify({type:'face-progress',state:'ENROLLMENT_COMMITTING',progress:count,total:count,manualCapture:false,label});
       if(!ticket){progress('저장된 얼굴 정보의 암호화를 확인하고 있습니다');const restored=await unlock();await faceStore('settings','readwrite',`${uid}:${installationId}:pending`,undefined);return restored;}
       if(record?.ticketId!==ticket.id){
         progress('얼굴 정보를 암호화하고 있습니다');

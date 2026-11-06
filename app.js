@@ -1,7 +1,9 @@
-import './auth.js?v=20261022-1';
-import './data.js?v=20261025-8';
-import './camera.js?v=20261031-light1';
-import './integrations.js?v=20261025-8';
-import './planning.js?v=20261025-8';
-import './daily-report.js?v=20261025-8';
-import './study-social.js?v=20261025-8';
+import './auth.js?v=20261104-1';
+import './data.js?v=20261105-shop10';
+import './camera.js?v=20261105-turn1';
+import './integrations.js?v=20261103-privateui1';
+import './planning.js?v=20261104-1';
+import './daily-report.js?v=20261103-privateui1';
+import './study-social.js?v=20261105-shop10';
+import './play.js?v=20261106-world5';
+import './friend-profile.js?v=20261105-shop10';

@@ -6,18 +6,20 @@ import { checkReach, checkSegment, facePose, mergePath, mergeStroke, MERGE_DURAT
 import { createFocusTracker } from '../camera-focus.js';
 const healthySignals = { reliable:true, face:true, body:true, eyesClosed:false, phoneUse:false, studyActivity:true };
 
-test('camera startup waits for encrypted profile readiness without requiring a face match',async()=>{
-  let finishVerification,waiting=false,finished=false;
+test('camera startup waits for both encrypted profile readiness and the first face match',async()=>{
+  let finishVerification,finishProfile,waiting=false,finished=false;
   const video={setAttribute(){},play:async()=>{},remove(){}};
   const stream={getVideoTracks:()=>[],getTracks:()=>[]};
   const document={hidden:false,createElement:()=>video,querySelector:()=>null,addEventListener(){},body:{append(){}}};
   const source=(await readFile(new URL('../camera.js',import.meta.url),'utf8')).replace(/^import .*;\r?\n/gm,'').replace(/^export /gm,'').replaceAll('import.meta.url',JSON.stringify(import.meta.url));
   const context=vm.createContext({document,crypto,Event,createFocusTracker,performance:{now:()=>0},window:{addEventListener(){},dispatchEvent(){}},
     navigator:{mediaDevices:{getUserMedia:async()=>stream}},prepareFaceSession:async()=>{},attachFacePreview(){},
-    waitForFaceSessionReady:()=>{waiting=true;return new Promise(resolve=>{finishVerification=resolve;});}});
+    waitForFaceSessionReady:()=>new Promise(resolve=>{finishProfile=resolve;}),
+    waitForFaceVerification:()=>{waiting=true;return new Promise(resolve=>{finishVerification=resolve;});}});
   vm.runInContext(`${source}\nstartRecognitionWorker=()=>{};startCameraWatchdog=()=>{};frame=async()=>{};globalThis.startCamera=startCamera;globalThis.state=cameraState;`,context);
   const start=context.startCamera().then(result=>{finished=true;return result;});
   await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(waiting,false);assert.equal(finished,false);finishProfile(true);await new Promise(resolve=>setImmediate(resolve));
   assert.equal(waiting,true);assert.equal(finished,false);assert.equal(context.state().identityPhase,'loading');
   finishVerification(true);assert.equal(await start,true);
 });
@@ -36,7 +38,7 @@ test('account settings reenrollment replaces the profile without starting a stud
   assert.match(html,/<dialog[^>]*id="account-settings"[\s\S]*data-face-reenroll[\s\S]*<\/dialog>/);
 });
 
-test('inference requests are at least 300ms apart and never overlap a pending frame',async()=>{
+test('inference requests are at least 400ms apart and never overlap a pending frame',async()=>{
   let now=0;const sent=[],delays=[],video={readyState:2,currentTime:0,setAttribute(){}};
   const document={hidden:false,createElement:()=>video,querySelector:()=>null,addEventListener(){}};
   const source=(await readFile(new URL('../camera.js',import.meta.url),'utf8')).replace(/^import .*;\r?\n/gm,'').replace(/^export /gm,'').replaceAll('import.meta.url',JSON.stringify(import.meta.url));
@@ -44,11 +46,45 @@ test('inference requests are at least 300ms apart and never overlap a pending fr
   vm.runInContext(`${source}\nenabled=ready=true;worker={postMessage:send};globalThis.runFrame=()=>frame(revision);globalThis.ack=()=>{inFlight=false;};`,context);
   await context.runFrame();assert.equal(sent.length,1);
   context.ack();now=50;video.currentTime=.05;await context.runFrame();assert.equal(sent.length,1);
-  now=299;video.currentTime=.299;await context.runFrame();assert.equal(sent.length,1);
-  now=300;video.currentTime=.3;await context.runFrame();assert.equal(sent.length,2);
-  now=600;video.currentTime=.6;await context.runFrame();assert.equal(sent.length,2);
+  now=399;video.currentTime=.399;await context.runFrame();assert.equal(sent.length,1);
+  now=400;video.currentTime=.4;await context.runFrame();assert.equal(sent.length,2);
+  now=800;video.currentTime=.8;await context.runFrame();assert.equal(sent.length,2);
   context.ack();await context.runFrame();assert.equal(sent.length,3);
-  assert.deepEqual(sent.map(data=>data.time),[0,300,600]);assert.ok(delays.every(delay=>delay===300));
+  assert.deepEqual(sent.map(data=>data.time),[0,400,800]);assert.ok(delays.every(delay=>delay===400));
+});
+
+test('enrollment tracking runs at 80ms without overlapping requests or adding inference idle time',async()=>{
+  let now=0;const sent=[],delays=[],video={readyState:2,currentTime:0,setAttribute(){}};
+  const document={hidden:false,createElement:()=>video,querySelector:()=>null,addEventListener(){}};
+  const source=(await readFile(new URL('../camera.js',import.meta.url),'utf8')).replace(/^import .*;\r?\n/gm,'').replace(/^export /gm,'').replaceAll('import.meta.url',JSON.stringify(import.meta.url));
+  const context=vm.createContext({document,crypto,Event,createFocusTracker,performance:{now:()=>now},setTimeout:(_,delay)=>{delays.push(delay);return 1;},createImageBitmap:async()=>({close(){}}),send:data=>sent.push(data),window:{addEventListener(){},dispatchEvent(){}}});
+  vm.runInContext(`${source}\nenabled=ready=true;identityPhase='enrolling';worker={postMessage:send};globalThis.runFrame=()=>frame(revision);globalThis.phase=()=>identityPhase;globalThis.ack=(enrolled=false)=>acceptResult({time:performance.now(),inferenceMs:500,signals:{reliable:true,face:true,identity:{enrolled,matched:false,status:enrolled?'checking':'enrolling'}}});`,context);
+  await context.runFrame();assert.equal(sent.length,1);
+  now=80;video.currentTime=.08;await context.runFrame();assert.equal(sent.length,1);
+  context.ack();assert.equal(context.phase(),'enrolling','the verification gate must not overwrite enrollment');await context.runFrame();assert.equal(sent.length,2,'no extra half-inference pause');
+  context.ack();now=159;video.currentTime=.159;await context.runFrame();assert.equal(sent.length,2);
+  now=160;video.currentTime=.16;await context.runFrame();assert.equal(sent.length,3);
+  assert.ok(delays.every(delay=>delay===80));
+  context.ack(true);assert.equal(context.phase(),'checking','completed enrollment still enters the identity verification gate');
+  now=240;video.currentTime=.24;await context.runFrame();assert.equal(sent.filter(data=>data.type==='frame').length,3);
+  assert.equal(delays.at(-1),400);
+});
+
+test('enrollment follows new video frames and cancels the callback on shutdown',async()=>{
+  let now=0,sequence=0;const sent=[],callbacks=new Map(),cancelled=[];
+  const video={readyState:2,currentTime:0,setAttribute(){},remove(){},
+    requestVideoFrameCallback:fn=>{const id=++sequence;callbacks.set(id,fn);return id;},
+    cancelVideoFrameCallback:id=>{cancelled.push(id);callbacks.delete(id);}};
+  const document={hidden:false,createElement:()=>video,querySelector:()=>null,addEventListener(){}};
+  const source=(await readFile(new URL('../camera.js',import.meta.url),'utf8')).replace(/^import .*;\r?\n/gm,'').replace(/^export /gm,'').replaceAll('import.meta.url',JSON.stringify(import.meta.url));
+  const context=vm.createContext({document,crypto,Event,createFocusTracker,clearTimeout(){},clearInterval(){},performance:{now:()=>now},setTimeout(){throw Error('Enrollment must use video delivery');},createImageBitmap:async()=>({close(){}}),send:data=>sent.push(data),window:{addEventListener(){},dispatchEvent(){}}});
+  vm.runInContext(`${source}\nenabled=ready=true;identityPhase='enrolling';worker={postMessage:send,terminate(){}};globalThis.runFrame=()=>frame(revision);globalThis.ack=()=>acceptResult({time:performance.now(),signals:{reliable:true,face:true,identity:{enrolled:false}}});globalThis.stop=stopCamera;`,context);
+  const deliver=async time=>{now=time;video.currentTime=time/1000;const [id,callback]=callbacks.entries().next().value;callbacks.delete(id);callback();await new Promise(resolve=>setImmediate(resolve));};
+  await context.runFrame();assert.equal(sent.length,1);assert.equal(callbacks.size,1);
+  context.ack();await deliver(100);assert.equal(sent.length,2);
+  await deliver(200);assert.equal(sent.length,2,'never queue an older frame behind pending inference');
+  context.ack();await deliver(300);assert.equal(sent.length,3);assert.equal(sent.at(-1).time,300);
+  context.stop();assert.equal(callbacks.size,0);assert.equal(cancelled.length,1);
 });
 
 test('repeated slow phone inference switches once to the light worker and ignores the replaced worker',async()=>{

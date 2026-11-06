@@ -1,0 +1,15 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'site.junhyuk.study.phonetest'
+    compileSdk 34
+    defaultConfig {
+        applicationId 'site.junhyuk.study.phonetest'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '0.1-test'
+    }
+}
+
+dependencies { implementation 'com.google.android.gms:play-services-auth:21.6.0' }

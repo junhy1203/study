@@ -1,9 +1,10 @@
-import { authReady, getAuthUser } from './auth.js?v=20261022-1';
+import { authReady, getAuthUser } from './auth.js?v=20261104-1';
+import {isNetworkFailure,CONNECTION_MESSAGE} from './network-errors.js?v=20261103-privateui1';
 import {wordLiveSeconds} from './word-time.js?v=20261022-1';
-import { readCache, statsRevision } from './client-cache.js?v=20261024-selfhost1';
+import { readCache, statsRevision } from './client-cache.js?v=20261105-shop10';
 import { showToast } from './notifications.js?v=20261022-18';
-import { cameraController, cameraState, startCamera, stopCamera, openCameraFocus, closeCameraFocus, toggleCameraPause } from './camera.js?v=20261031-light1';
-import {faceStudyAuthorization} from './face-session.js';
+import { cameraController, cameraState, startCamera, stopCamera, openCameraFocus, closeCameraFocus, toggleCameraPause } from './camera.js?v=20261105-turn1';
+import {faceStudyAuthorization} from './face-session.js?v=20261105-turn1';
 
 const historicalSubjects = { korean: '국어', math: '수학', english: '영어', science: '과학', social: '사회' };
 function studySubjects() { return {other:'기타',...Object.fromEntries((state.profile?.subjects || []).map(row => [row.id,row.name]))}; }
@@ -32,6 +33,7 @@ let resolveDataReady;
 const dataReady = new Promise(resolve => { resolveDataReady = resolve; });
 let generation = 0;
 let connectedUid = null;
+let accountBadgeRows=[];
 let connectedDay = null;
 let profileReady = Promise.resolve();
 let subscriptions = [];
@@ -51,6 +53,7 @@ let cameraTransitions = [], cameraEventCounter = 0;
 let cameraLastWordPaused=null;
 let sessionClock = null;
 let wordClock=null;
+let focusReceiptEpoch=0;
 let cameraDisplay = null;
 // Confirmed server credit plus a lease-bounded, monotonic local estimate.
 function updateCameraDisplay() {
@@ -160,6 +163,7 @@ function notice(text, error = false, transient = !error) {
   paint();
 }
 function errorText(error) {
+  if(isNetworkFailure(error))return CONNECTION_MESSAGE;
   // Keep actionable service/local errors instead of disguising every failure as a network outage.
   if(typeof error?.message==='string'&&error.message&&error.message!=='INTERNAL')return error.message;
   const messages = {
@@ -294,13 +298,29 @@ function paint() {
     const input = form.elements.displayName;
     if (input && document.activeElement !== input) input.value = state.profile?.displayName || user?.displayName || '';
   }
+  for(const mount of document.querySelectorAll('[data-account-badges]')){
+    mount.replaceChildren();mount.hidden=!user||!accountBadgeRows.length;
+    for(const award of accountBadgeRows){const badge=document.createElement('span');badge.className='account-award';badge.dataset.award=award.id;badge.textContent=award.label;mount.append(badge);}
+  }
   paintTimer();
   openLinkedSettings();
   window.dispatchEvent(new Event('study:data-changed'));
 }
 
+function applyFocusReceipt(detail){
+  const uid=getAuthUser()?.uid;
+  if(!uid||detail?.uid!==uid||!Number.isFinite(detail.balanceSeconds)||detail.balanceSeconds<0)return;
+  focusReceiptEpoch++;
+  state.focusTime={...state.focusTime,balanceSeconds:detail.balanceSeconds};
+  state.pending.delete('focusTime');state.failed.delete('focusTime');
+  const key=`${uid}:stats:wallet-v3:${dateKey()}:${statsRevision(state.profile,'focusTime')}:${state.profile?.schoolId||''}:focusTime`;
+  readCache.set(key,state.focusTime,15*60000);
+  paint();
+}
+window.addEventListener('study:focus-purchase',event=>applyFocusReceipt(event.detail));
+
 function wordAppInUse() {
-  return Boolean(state.active?.cameraMode && state.profile?.wordCameraSessionId===state.profile?.activeSessionId && state.profile?.wordPresenceUntilMs>sessionNow());
+  return Boolean(state.active?.cameraMode && state.profile?.wordCameraSessionId===state.profile?.activeSessionId && Math.max(state.profile?.wordPresenceUntilMs||0,state.profile?.wordAppUntilMs||0)>sessionNow());
 }
 function cameraPageHidden(){return document.hidden;}
 function cameraTimerMessage(camera) {
@@ -467,18 +487,25 @@ function visibleDataKeys() {
 async function loadVisibleData() {
   if (!sdk || !connectedUid || state.pending.has('profile') || document.hidden) return;
   const token = generation, uid = connectedUid, today = dateKey(), week = monday(today);
+  const requestedFocusEpoch=focusReceiptEpoch;
   const currentSchoolId=state.profile?.schoolId || '';
   const paths = {today:['dailyStats',today],week:['weeklyStats',week],month:['monthlyStats',today.slice(0,7)],summary:['stats','summary'],focusTime:['stats','focusTime'],lastWeek:['weeklyStats',monday(dateKey(Date.now()-7*86400000))]};
   const keys=visibleDataKeys();
+  let paintQueued=false;
+  const paintAvailable=()=>{
+    if(paintQueued)return;paintQueued=true;
+    Promise.resolve().then(()=>{paintQueued=false;if(token===generation)paint();});
+  };
   const apply=(key,result)=>{
     state[key]=result;state.pending.delete(key);state.failed.delete(key);
     if(key==='days'&&keys.has('today')){
       state.today=result.find(row=>row.date===today)||{};state.pending.delete('today');state.failed.delete('today');
     }
+    paintAvailable();
   };
   await Promise.all([...keys].filter(key=>key!=='today'||!keys.has('days')).map(async key => {
     const keyRevision=statsRevision(state.profile,key);
-    const cacheKey = `${uid}:stats:v2:${today}:${keyRevision}:${currentSchoolId}:${key}`;
+    const cacheKey = `${uid}:stats:${key==='focusTime'?'wallet-v3':'v2'}:${today}:${keyRevision}:${currentSchoolId}:${key}`;
     const cached = readCache.get(cacheKey);
     if (cached !== undefined) {apply(key,cached);return;}
     if (dataRequests.has(cacheKey)) return;
@@ -495,7 +522,7 @@ async function loadVisibleData() {
           const rows = await sdk.getDocs(sdk.query(sdk.collection(db,...path),sdk.orderBy('totalSeconds','desc'),sdk.orderBy('uid'),sdk.limit(50)));
           result = rows.docs.map(row => row.data());
         }
-        if (token !== generation || keyRevision !== statsRevision(state.profile,key) || currentSchoolId !== (state.profile?.schoolId || '')) return;
+        if (token !== generation || keyRevision !== statsRevision(state.profile,key) || currentSchoolId !== (state.profile?.schoolId || '') || key==='focusTime'&&requestedFocusEpoch!==focusReceiptEpoch) return;
         readCache.set(cacheKey,result,key.includes('Ranking') || key === 'ranking' ? 5*60000 : 15*60000);
         apply(key,result);
       } catch (error) {
@@ -522,6 +549,7 @@ async function connectUser() {
   authResolved = true;
   if (!user) state.pending.clear();
   connectedUid = user?.uid || null;
+  accountBadgeRows=[];
   connectedDay = today;
   paint();
   if (!user) return;
@@ -533,11 +561,12 @@ async function connectUser() {
   watch(sdk.doc(db, 'users', uid), snapshot => {
     const previousSessionId = state.profile?.activeSessionId;
     const previousRevision = state.profile?.studyRevision || 0;
+    const previousFocusRevision=state.profile?.focusRevision||0;
     const previousSchoolId = state.profile?.schoolId;
     const previousWordPresence = state.profile?.wordPresenceUntilMs;
     const previousWordClock=state.profile?.wordSnapshot?.serverNowMs;
     const profile = snapshot.data() || null;
-    if (profile && (profile.studyRevision || 0) < previousRevision) return;
+    if (profile && ((profile.studyRevision || 0) < previousRevision || (profile.focusRevision||0)<previousFocusRevision)) return;
     state.profile = profile;
     if(previousWordClock!==profile?.wordSnapshot?.serverNowMs)wordClock=profile?.wordSnapshot?{serverMs:profile.wordSnapshot.serverNowMs,localMs:performance.now()}:null;
   if(Boolean(previousWordPresence>Date.now())!==Boolean(profile?.wordPresenceUntilMs>Date.now()))queueMicrotask(()=>{if(token===generation)void syncCamera();});
@@ -569,6 +598,10 @@ async function connectUser() {
     queueMicrotask(() => { if (token === generation) void loadVisibleData(); });
   }, token, 'profile', rejectProfile);
   try { await profileReady; } catch (error) { if (token === generation) notice(errorText(error), true); }
+  if(token===generation&&document.querySelector('[data-account-badges]')){
+    try{const result=await call('getAccountBadges')({});if(token===generation){accountBadgeRows=result.data.badges||[];paint();}}
+    catch(error){if(token===generation)notice(errorText(error),true);}
+  }
 }
 
 document.addEventListener('click', async event => {
@@ -619,7 +652,8 @@ document.addEventListener('click', async event => {
     await connectUser();
     await profileReady;
     // Email verification can change before the cached ID token is refreshed.
-    await authServices.auth.currentUser.getIdToken(true);
+    try{await authServices.auth.currentUser.getIdToken(true);}
+    catch(error){if(!isNetworkFailure(error))throw error;await authServices.auth.currentUser.getIdToken();}
     if (starting) {
       const subjectId = document.querySelector('[data-study-subject]')?.value || 'other';
       const cameraMode = cameraState().enabled;
@@ -761,7 +795,7 @@ try {
   authServices = await authReady;
   if (!authServices) { authResolved = true; state.pending.clear(); notice('서비스를 불러오지 못했습니다. 새로고침해 주세요.', true); }
   if (authServices) {
-    sdk = await import('./server-client.js?v=20261024-selfhost1');
+    sdk = await import('./server-client.js?v=20261103-privateui1');
     db = null;
     call = name => sdk.serverCallable(name);
     await connectUser();
