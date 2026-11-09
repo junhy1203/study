@@ -1,7 +1,8 @@
 import {AVATAR_DEFAULT,avatarItem} from './functions/avatar-catalog.js?v=20261106-luxury1';
-import {LUXURY_CHARACTERS,LUXURY_EFFECTS,drawLuxuryCharacter,drawLuxuryHat,drawLuxuryGlasses,drawLuxuryEffect} from './avatar-luxury.js?v=20261106-luxury1';
+import {LUXURY_CHARACTERS,LUXURY_EFFECTS,drawLuxuryCharacter,drawLuxuryHat,drawLuxuryGlasses,drawLuxuryEffect} from './avatar-luxury.js?v=20261107-impact1';
 import {ACCESSORIES,drawAccessory} from './avatar-accessories.js?v=20261106-accessory1';
-import {CINEMATIC_EFFECTS,drawCinematicEffect} from './avatar-cinematic.js?v=20261106-cinematic1';
+import {CINEMATIC_EFFECTS,drawCinematicEffect} from './avatar-cinematic.js?v=20261107-impact1';
+import {drawImpactEffect} from './avatar-impact.js?v=20261107-impact1';
 import {RPG_CHARACTERS,RPG_EFFECTS,drawRPGCharacter,drawRPGHat,drawRPGGlasses,drawRPGParticle} from './avatar-rpg.js?v=20261105-shop10';
 import {STREET_CHARACTERS,STREET_EFFECTS,drawStreetCharacter,drawStreetHat,drawStreetGlasses,drawStreetParticle} from './avatar-street.js?v=20261105-shop10';
 const COLORS={sprout:['#b9d59a','#91b66e','#dcedc3'],cat:['#efbd7a','#d88b51','#ffe2af'],fox:['#ed9a55','#c86838','#ffcf8a'],penguin:['#708ca7','#3f607e','#b5ccdc'],robot:['#9cb9ca','#648999','#d6edf1'],bunny:['#d5b4da','#a57db0','#f4dff3'],bear:['#c79360','#97653e','#e9c693'],dragon:['#9d99e0','#6661b0','#d9d0ff']};
@@ -21,16 +22,15 @@ export function pixelAvatar(value=AVATAR_DEFAULT,{sceneOverflow=false}={}){
   const effect=make('g',{class:`avatar-fx avatar-fx-${a.effect}`},svg);
   if(cinematic)drawCinematicEffect(a.effect,effect,{make,ellipse});
   else if(LUXURY_EFFECTS[a.effect])drawLuxuryEffect(a.effect,effect,{make,ellipse});
-  else if(a.effect!=='none'){
-    const hues={stars:'#f6c96b',leaves:'#77dda2',sparkles:'#c4a4ff',flame:'#ff955d',galaxy:'#9cafff',snow:'#a5e9ff',hearts:'#ff8fba'},hue=STREET_EFFECTS[a.effect]?.color||RPG_EFFECTS[a.effect]?.color||hues[a.effect]||hues.stars;
+  else if(a.effect!=='none'&&!drawImpactEffect(a.effect,effect,{make,ellipse})){
+    const hues={stars:'#f6c96b',leaves:'#77dda2',sparkles:'#c4a4ff',hearts:'#ff8fba'},hue=STREET_EFFECTS[a.effect]?.color||RPG_EFFECTS[a.effect]?.color||hues[a.effect]||hues.stars;
     ellipse(9,20,10,2.5,{fill:hue,opacity:'.13',class:'avatar-aura'},effect);
-    if(['stars','galaxy','sparkles','snow'].includes(a.effect)||RPG_EFFECTS[a.effect]?.ring){
+    if(['stars','sparkles'].includes(a.effect)||RPG_EFFECTS[a.effect]?.ring){
       for(let i=0;i<2;i++)ellipse(9,11,11-i*1.3,4+i*4,{fill:'none',stroke:hue,'stroke-width':i?.14:.24,opacity:'.5',transform:`rotate(${i?52:-22} 9 11)`,class:'avatar-halo'},effect);
     }
-    if(a.effect==='galaxy')ellipse(9,10,11.5,13,{fill:'none',stroke:'#e1b1ff','stroke-width':'.35','stroke-dasharray':'1 1.5',class:'avatar-galaxy-ring'},effect);
     if(RPG_EFFECTS[a.effect]?.ring){ellipse(9,10,10.5,12,{fill:'none',stroke:hue,'stroke-width':'.3','stroke-dasharray':a.effect==='runes'?'1.5 .5':'.4 2',class:'avatar-galaxy-ring'},effect);}
     if(STREET_EFFECTS[a.effect]?.ring){ellipse(9,10,11,12,{fill:'none',stroke:hue,'stroke-width':a.effect==='chromehaze'?'.65':'.4','stroke-dasharray':'8 4 1 4',class:'avatar-street-ring'},effect);ellipse(9,11,11.5,4,{fill:'none',stroke:a.effect==='neonloop'?'#d7ace9':hue,'stroke-width':'.35',transform:'rotate(-18 9 11)',opacity:'.6'},effect);}
-    const orbit=make('g',{class:'avatar-orbit'},effect),count=a.effect==='flame'?12:9;
+    const orbit=make('g',{class:'avatar-orbit'},effect),count=9;
     for(let i=0;i<count;i++){
       const angle=i*Math.PI*2/count,x=9+Math.cos(angle)*11,y=10+Math.sin(angle)*11.5;
       const particle=make('g',{class:`avatar-particle avatar-particle-${a.effect}`,style:`--delay:${-i*.47}s;--duration:${2.6+i%4*.4}s;--drift:${(i%2?1:-1)*(1+i%3)}px;--spin:${i%2?32:-28}deg`},orbit);
@@ -39,8 +39,6 @@ export function pixelAvatar(value=AVATAR_DEFAULT,{sceneOverflow=false}={}){
       else if(RPG_EFFECTS[a.effect])drawRPGParticle(a.effect,anchor,{make,ellipse},hue,i);
       else if(a.effect==='leaves')make('path',{d:'M-1.2 1Q-2-1 1.5-1.7Q2.2.5-1.2 1M-1 1 1-1',fill:i%2?'#bfe990':hue,stroke:'#438d67','stroke-width':'.12'},anchor);
       else if(a.effect==='hearts')make('path',{d:'M0 1.4-1.6-.1Q-2.3-1.6-.8-1.7Q0-1.8 0-.9Q.8-2.2 1.6-1.3Q2.2-.5 0 1.4',fill:i%2?'#ffd2e3':hue},anchor);
-      else if(a.effect==='flame')make('path',{d:'M0 2Q-2.5.8-1-1Q-.4-1.8-.5-3Q2-.5 1.5 1Q1 2 0 2',fill:i%2?'#ffd478':hue},anchor);
-      else if(a.effect==='snow'){make('path',{d:'M-1.5 0h3M0-1.5v3M-1-1 2 2M-1 1 1-1',fill:'none',stroke:i%2?'#ecfbff':hue,'stroke-width':'.3'},anchor);}
       else make('path',{d:'M0-1.7 .45-.45 1.7 0 .45.45 0 1.7-.45.45-1.7 0-.45-.45Z',fill:i%2?'#fff2ca':hue},anchor);
     }
   }

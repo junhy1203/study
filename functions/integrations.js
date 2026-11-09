@@ -4,7 +4,7 @@ import { onCall, HttpsError } from './platform-http.js';
 import { defineSecret } from './platform-secrets.js';
 import { schoolCodes, classroom, neisRows, schoolRecord, chatContents, schoolDates, schoolCalendarRange } from './integrations-domain.js';
 import { generateForUser, usageFor } from './ai-service.js';
-import { schoolMonth, loadSchoolData, loadUpcomingExams } from './school-service.js';
+import { schoolMonth, schoolQuery, loadSchoolData, loadUpcomingExams } from './school-service.js';
 import { schoolAgent } from './school-agent.js';
 import { runPlanTool } from './plan-agent.js';
 import { cachedBriefing } from './briefing-cache.js';
@@ -75,6 +75,12 @@ export const getSchoolOverview = onCall({...options, secrets:[neisKey]}, async r
   await rateLimit(user, 'school', 20);
   const school = (await db.doc(`users/${user}`).get()).data()?.school;
   const dates = schoolDates();
+  const mealDate = request.data?.mealDate;
+  if (mealDate !== undefined) {
+    const query = input(() => schoolQuery({start:mealDate, end:mealDate, types:['meals']}));
+    const meals = await loadSchoolData(school, query, neis);
+    return {...meals, school:school ?? null, mealDate};
+  }
   const month = input(() => schoolMonth(request.data?.month ?? dates.date.slice(0,7)));
   if (!school) return {school:null, ...dates};
   const calendarRange = schoolCalendarRange(`${month}-01`);

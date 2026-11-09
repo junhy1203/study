@@ -1,8 +1,32 @@
 <!doctype html>
-<html lang="ko"><head><script src="theme.js?v=20261104-1"></script><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>플레이 — study</title><link rel="stylesheet" href="styles.css?v=20261106-world4"><script src="navigation.js?v=20261105-shop10"></script><script type="module" src="app.js?v=20261106-world5"></script></head><body><div class="app">
+<html lang="ko"><head><script src="theme.js?v=20261104-1"></script><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>플레이 — study</title><link rel="stylesheet" href="styles.css?v=20261109-types2"><script src="navigation.js?v=20261105-shop10"></script><script type="module" src="app.js?v=20261109-types2"></script></head><body><div class="app">
 <header class="header"><a class="brand" href="index.html">STUDY.</a><a class="profile-dot" href="account.html" aria-label="내 계정">·</a></header>
 <main aria-label="플레이">
-<div class="play-dashboard"><section class="card play-profile play-avatar-card"><h2>나의 아바타</h2><div data-avatar-preview></div><div class="play-avatar-actions"><button type="button" class="secondary-button" data-avatar-edit>꾸미기 ↗</button><button type="button" class="secondary-button world-enter-button" data-world-enter>가상현실 입장하기 ↗</button></div></section><div class="play-dashboard-tools"><section class="card"><h2>공부 MBTI · <span data-personality-name>나의 학자</span></h2><p class="personality-reason" data-personality-reason></p><p class="tiny muted">실제 기록 기반 재미로 보는 공부 성향 · 16명의 학자 · 매주 갱신</p><button class="secondary-button" type="button" data-personality-refresh>다시 분석하기</button></section><section class="card"><h2>폰 사용시간</h2><p>잔량 <strong data-phone-balance>불러오는 중…</strong></p><p class="tiny muted">Focus Time 10분 → 폰 시간 5분 · 실제 기기 잠금 기능은 준비 중입니다.</p><div class="phone-shop"><button class="secondary-button" type="button" data-phone-buy="300">5분 구매</button><button class="secondary-button" type="button" data-phone-buy="900">15분 구매</button><button class="secondary-button" type="button" data-phone-buy="1800">30분 구매</button></div></section></div></div>
+<div class="play-dashboard"><section class="card play-profile play-avatar-card"><h2>나의 아바타</h2><div data-avatar-preview data-skeleton="avatar" aria-busy="true"></div><div class="play-avatar-actions"><button type="button" class="secondary-button" data-avatar-edit>꾸미기 ↗</button><button type="button" class="secondary-button world-enter-button" data-world-enter>가상현실 입장하기 ↗</button></div></section><div class="play-dashboard-tools"><section class="card"><h2>공부 MBTI · <span data-personality-name>나의 학자</span></h2><p class="personality-reason" data-personality-reason></p><p class="tiny muted">실제 기록 기반 재미로 보는 공부 성향 · 16명의 학자 · 매주 갱신</p>
+<div class="personality-actions">
+  <button class="secondary-button" type="button" data-personality-refresh>다시 분석</button>
+  <button class="secondary-button" type="button" data-personality-types-open aria-haspopup="dialog" aria-controls="personality-types-dialog">전체 유형 16개</button>
+  <button class="secondary-button" type="button" data-personality-types-open aria-haspopup="dialog" aria-controls="personality-radar-dialog">내 공부 유형</button>
+</div>
+<p class="auth-status personality-status" data-personality-status role="status" hidden></p>
+<dialog class="profile-dialog personality-types" id="personality-types-dialog" aria-labelledby="personality-types-title">
+  <header class="personality-types-header">
+    <div>
+      <h2 id="personality-types-title">공부 MBTI 유형과 기준</h2>
+      <p class="tiny muted">최근 7일 기록에서 어떤 공부 패턴이 두드러질 때 각 유형에 가까운지 보여줘요.</p>
+    </div>
+    <button class="secondary-button" type="button" data-personality-types-close autofocus>닫기</button>
+  </header>
+  <div class="personality-types-grid" data-personality-types-list></div>
+</dialog>
+<dialog class="profile-dialog personality-types personality-radar-dialog" id="personality-radar-dialog" aria-labelledby="personality-radar-title">
+  <header class="personality-types-header">
+    <div><h2 id="personality-radar-title">내 공부 유형</h2><p class="tiny muted">최근 7일 공부 기록을 여섯 가지 지표로 정리했어요. 점수는 항목별 기준을 100점으로 환산한 값이에요.</p></div>
+    <button class="secondary-button" type="button" data-personality-types-close autofocus>닫기</button>
+  </header>
+  <div class="personality-radar-body" data-personality-radar></div>
+</dialog>
+</section><section class="card"><h2>폰 사용시간</h2><p>잔량 <strong data-phone-balance data-skeleton="line" aria-busy="true">불러오는 중…</strong></p><p class="tiny muted">Focus Time 10분 → 폰 시간 5분 · 실제 기기 잠금 기능은 준비 중입니다.</p><div class="phone-shop"><button class="secondary-button" type="button" data-phone-buy="300">5분 구매</button><button class="secondary-button" type="button" data-phone-buy="900">15분 구매</button><button class="secondary-button" type="button" data-phone-buy="1800">30분 구매</button></div></section></div></div>
 <section class="social-space play-friends" data-social aria-label="친구">
 <p class="auth-status" data-social-login>친구 정보를 불러오는 중…</p><p class="auth-status is-error" data-social-error role="status" hidden></p>
 <div data-social-content hidden>
@@ -12,5 +36,5 @@
 <dialog class="goal-dialog" data-social-confirm aria-labelledby="social-confirm-title"><h2 id="social-confirm-title">계속할까요?</h2><p class="report-note" data-confirm-text></p><div class="social-actions"><button type="button" class="social-button" data-social-action="dismiss">취소</button><button type="button" class="social-button social-danger" data-social-action="confirm" data-confirm-action>확인</button></div></dialog>
 </section>
 <p class="auth-status play-status" data-play-status role="status"></p>
-<div class="timer-panel"><div><span class="ft-label">FOCUS TIME</span><p class="timer" data-focus-balance aria-live="polite">00:00:00</p></div><span class="mini-icon sage" style="margin:0 0 0 auto" aria-hidden="true">✳</span></div><p class="demo-note">공부를 완료하면 인정된 시간만큼 Focus Time이 쌓여요.</p></main>
+<div class="timer-panel"><div><span class="ft-label">FOCUS TIME</span><p class="timer" data-focus-balance data-skeleton="line" aria-busy="true" aria-live="polite">00:00:00</p></div><span class="mini-icon sage" style="margin:0 0 0 auto" aria-hidden="true">✳</span></div><p class="demo-note">공부를 완료하면 인정된 시간만큼 Focus Time이 쌓여요.</p></main>
 <nav class="bottom-nav" aria-label="주 메뉴"><a href="index.html"><span>⌂</span>홈</a><a href="study.html"><span>◷</span>학습</a><a class="nav-ai" href="ai.html"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M12 3c0 6-3 9-9 9 6 0 9 3 9 9 0-6 3-9 9-9-6 0-9-3-9-9Z"/></svg></span>AI 질문하기</a><a href="school.html"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m3 10 9-7 9 7M5 9v12h14V9M9 21v-6h6v6"/><path d="M8 11h1m6 0h1"/></svg></span>학교</a><a href="play.html" aria-current="page"><span>♧</span>플레이</a></nav></div><script src="header.js?v=20261022-1" defer></script></body></html>

@@ -197,7 +197,7 @@ test('study authorization binds signature to sequence, tracking and active gener
   data.faceAuthorization.signature=await h.sign('study',studyNonce(data));
   const authorized=await h.db.runTransaction(tx=>authorizeFaceStudy(tx,h.db,h.uid,data,null,h.now));assert.equal(authorized.faceLeaseUntilMs,h.now+60000);
   for(const modified of [{...data,sequence:2},{...data,tracking:false},{...data,faceAuthorization:{...data.faceAuthorization,generation:2}}])await assert.rejects(h.db.runTransaction(tx=>authorizeFaceStudy(tx,h.db,h.uid,modified,null,h.now)));
-  await h.call('revokeFaceEnrollment');await assert.rejects(h.db.runTransaction(tx=>authorizeFaceStudy(tx,h.db,h.uid,data,null,h.now)));
+  h.setAuthTime(Math.floor(h.now/1000)-86400);await h.call('revokeFaceEnrollment');await assert.rejects(h.db.runTransaction(tx=>authorizeFaceStudy(tx,h.db,h.uid,data,null,h.now)));
 });
 test('server Seoul date and midnight clip credit even after delayed sync and finalization',()=>{
   const midnight=Date.parse('2026-10-27T00:00:00+09:00');assert.equal(faceDayEnd(midnight-1),midnight);assert.equal(seoulDay(midnight),'2026-10-27');

@@ -430,12 +430,13 @@ test('word handoff pauses the same camera and resumes after idle, re-entry and w
   assert.equal(word.session.cameraSessionId,camera.sessionId);
   assert.equal((await db.doc(`users/${auth.uid}`).get()).data().activeSessionId,camera.sessionId);
   const sync=async()=>syncStudyCamera.run({auth,data:{sessionId:camera.sessionId,controllerId,sequence:(await ref.get()).data().sequence+1,tracking:true}});
-  assert.equal((await sync()).session.activeSinceMs,null);
+  assert.ok((await sync()).session.activeSinceMs!=null);
   assert.ok((await syncWordStudy.run({auth,data:{sessionId:word.sessionId,controllerId,sequence:1,tracking:true,present:true}})).session.activeSinceMs!=null);
-  assert.equal((await sync()).session.activeSinceMs,null);
+  const counting=(await sync()).session;
+  assert.equal(counting.activeSinceMs,null);
   await syncWordStudy.run({auth,data:{sessionId:word.sessionId,controllerId,sequence:2,tracking:false,present:true}});
   assert.ok((await sync()).session.activeSinceMs!=null);
-  assert.equal((await ref.get()).data().accumulatedSeconds,paused.accumulatedSeconds);
+  assert.equal((await ref.get()).data().accumulatedSeconds,counting.accumulatedSeconds);
   await syncWordStudy.run({auth,data:{sessionId:word.sessionId,controllerId,sequence:3,tracking:true,present:true}});
   assert.equal((await sync()).session.activeSinceMs,null);
   await finishStudySession.run({auth,data:{sessionId:word.sessionId}});
@@ -477,7 +478,7 @@ test('a killed word app releases camera credit after its ten-second lease, befor
   assert.equal(synced.session.leaseUntilMs-synced.session.activeSinceMs,10000);
   const ref=db.doc(`users/${auth.uid}/sessions/${camera.sessionId}`);
   const paused=(await ref.get()).data();
-  assert.equal(paused.wordLeaseUntilMs-paused.updatedAt.toMillis(),10000);
+  assert.equal(paused.wordLeaseUntilMs,synced.session.leaseUntilMs);
   await ref.update({wordLeaseUntilMs:Date.now()-1});
   const resumed=await syncStudyCamera.run({auth,data:{sessionId:camera.sessionId,controllerId,sequence:100,tracking:true}});
   assert.ok(resumed.session.activeSinceMs!=null);assert.equal(resumed.session.wordPaused,false);

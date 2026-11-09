@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {createStudyGuard} from '../study-guard.js';
 import './camera-phone.test.mjs';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -6,7 +7,30 @@ import { readFile } from 'node:fs/promises';
 import { createFocusTracker, FOCUS_LIMITS } from '../camera-focus.js';
 import { extractFocusSignals, createCameraInference, createStudyMotionTracker, phoneSearchRegion, phoneSearchRegions, createFaceContinuity } from '../camera-inference.js';
 import { focusDebugRows } from '../camera-debug.js';
-import { createIdentityMatcher } from '../camera-identity.js';
+import { createIdentityMatcher, createOwnerFaceTrack } from '../camera-identity.js';
+
+test('overlap preserves the tracked face across detection order and rechecks the remaining face',()=>{
+  const face=x=>({33:{x:x-.06,y:.5},263:{x:x+.06,y:.5}});
+  const track=createOwnerFaceTrack();
+  track.remember([face(.3)],0,{compared:true});
+  const both=[face(.72),face(.33)];
+  assert.equal(track.follow(both),1);
+  track.remember(both,1);
+  assert.equal(track.follow([face(.36),face(.66)]),0);
+  assert.equal(track.follow([face(.36)]),-1,'even a remaining face near the prior owner position is compared');
+  track.remember([face(.36)],0,{compared:true});
+  assert.equal(track.follow([face(.38)]),0);
+});
+
+test('a stationary lowered head pauses as sleep at 15 seconds and study movement resets the clock',()=>{
+  const tracker=createFocusTracker();
+  const lowered={...healthy,headDown:true,gazeValid:false};
+  for(let time=0;time<=16000;time+=500)tracker.update({...lowered,studyActivity:time<2000},time);
+  assert.equal(tracker.update(lowered,16499).tracking,true);
+  const result=tracker.update(lowered,16500);
+  assert.equal(result.tracking,false);
+  assert.equal(result.reason,'sleep');
+});
 test('developer identity row shows recent owner seconds even after the face disappears',()=>{
   const tracker=createFocusTracker(),owner={reliable:true,face:true,studyActivity:true,identity:{enrolled:true,matched:true,score:.9}};
   for(let time=0;time<=10000;time+=1000)tracker.update(owner,time);
@@ -56,12 +80,12 @@ test('missing faces pause at 1.5 seconds and returning strangers never resume ti
   const wrong={...healthy,identity:{matched:false,status:'mismatch',enrolled:true}};
   advance(tracker,owner,0,2000);
   const absent={...healthy,face:false,identity:{matched:false,status:'missing',enrolled:true}};
-  assert.equal(advance(tracker,absent,2500,3500).tracking,true);
+  assert.equal(tracker.update(absent,2500).tracking,true);
   assert.equal(tracker.update(absent,3999).tracking,true);
   const missing=tracker.update(absent,4000);
   assert.equal(missing.tracking,false);assert.equal(missing.status,'paused');assert.equal(missing.reason,'away');
   assert.equal(missing.identityWarning,false);
-  assert.equal(tracker.update(wrong,7700).tracking,false);
+  assert.equal(tracker.update(wrong,6900).tracking,false);
   assert.equal(advance(tracker,wrong,7900,9500,200).tracking,false);
   assert.equal(tracker.update(wrong,9700).tracking,false);
   assert.equal(advance(tracker,wrong,9900,12300,200).tracking,false);
@@ -71,42 +95,48 @@ test('only the recognized owner passes the initial verification gate',()=>{
   const tracker=createFocusTracker(),owner={...healthy,studyActivity:true,identity:{matched:true,status:'matched',enrolled:true}},wrong={...healthy,studyActivity:true,identity:{matched:false,status:'mismatch',enrolled:true}};
   assert.equal(advance(tracker,wrong,0,4000,200).identityWarning,true);
   assert.equal(tracker.update(owner,5000).tracking,false);
-  assert.equal(tracker.update(owner,5500).verification.required,false);
-  assert.equal(advance(tracker,owner,5700,7700,200).tracking,true);
+  assert.equal(tracker.update(owner,5500).verification.phase,'scanning');
+  const retry=tracker.update(owner,5700);
+  assert.equal(retry.verification.required,false);assert.equal(retry.tracking,true);
 });
-for(const loss of [null,{reliable:false},{...healthy,face:false}])test(`missing face observations pause at 1.5 seconds before identity expiry: ${JSON.stringify(loss)}`,()=>{
+for(const loss of [null,{reliable:false},{...healthy,face:false}])test(`missing face observations pause at 1.5 seconds: ${JSON.stringify(loss)}`,()=>{
   const tracker=createFocusTracker(),owner={...healthy,identity:{matched:true,status:'matched',enrolled:true}};
   advance(tracker,owner,0,2000);
-  assert.equal(advance(tracker,loss,2200,3600,200).tracking,true);
+  assert.equal(advance(tracker,loss,2200,2600,200).tracking,true);
   assert.equal(tracker.update(loss,3699).tracking,true);
   const paused=tracker.update(loss,3700);
   assert.equal(paused.tracking,false);assert.equal(paused.reason,'away');assert.equal(paused.identityWarning,false);
   const stillMissing=advance(tracker,loss,3900,12200,200);
   assert.equal(stillMissing.tracking,false);assert.equal(stillMissing.reason,'away');assert.equal(stillMissing.identityWarning,false);
   assert.equal(tracker.update(owner,12400).tracking,false);
-  assert.equal(advance(tracker,owner,12600,14400,200).tracking,true);
+  assert.equal(advance(tracker,owner,12600,14400,200).verification.phase,'scanning');
+  assert.equal(tracker.update(owner,14600).tracking,true);
 });
 
 for(const withIdentity of [false,true])test(`away recovery waits two continuous seconds and resets on another face loss (identity: ${withIdentity})`,()=>{
   const tracker=createFocusTracker();
   const owner={...healthy,studyActivity:true,...(withIdentity?{identity:{matched:true,enrolled:true}}:{})};
   const absent={...owner,face:false,...(withIdentity?{identity:{matched:false,enrolled:true}}:{})};
+  const remaining=()=>withIdentity?tracker.getDebug().returnCountdown?.remainingMs??null:tracker.getDebug().resumeRemainingMs;
   advance(tracker,owner,0,2000);
   advance(tracker,absent,2200,7200,200);
   assert.equal(tracker.update(owner,7400).reason,'away');
-  assert.equal(tracker.getDebug().resumeRemainingMs,2000);
+  assert.equal(remaining(),2000);
   assert.equal(tracker.update(owner,8400).tracking,false);
-  assert.equal(tracker.getDebug().resumeRemainingMs,1000);
+  assert.equal(remaining(),1000);
   assert.equal(tracker.update(absent,8500).tracking,false);
-  assert.equal(tracker.getDebug().resumeRemainingMs,null);
+  assert.equal(remaining(),null);
   assert.equal(tracker.update(owner,8600).tracking,false);
-  assert.equal(tracker.getDebug().resumeRemainingMs,2000);
+  assert.equal(remaining(),2000);
   advance(tracker,owner,8800,10400,200);
   const before=tracker.update(owner,10599);
   assert.equal(before.tracking,false);assert.equal(before.reason,'away');
-  assert.equal(tracker.getDebug().resumeRemainingMs,1);
-  const resumed=tracker.update(owner,10600);
+  assert.equal(remaining(),1);
+  const completed=tracker.update(owner,10600);
+  if(withIdentity){assert.equal(completed.verification.phase,'scanning');assert.equal(completed.tracking,false);}
+  const resumed=withIdentity?tracker.update(owner,10800):completed;
   assert.equal(resumed.tracking,true);assert.equal(resumed.reason,null);
+  if(!withIdentity)assert.equal(resumed.verification,null);
 });
 
 test('missing face grace takes priority even when the identity deadline expires first',()=>{
@@ -115,13 +145,12 @@ test('missing face grace takes priority even when the identity deadline expires 
   advance(tracker,owner,0,2000);
   advance(tracker,wrong,2200,11000,200);
   const absent={...wrong,face:false};
-  advance(tracker,absent,11200,12200,200);
-  assert.equal(tracker.update(absent,12201).identityWarning,false);
-  assert.equal(advance(tracker,absent,12400,12600,200).tracking,true);
+  advance(tracker,absent,11200,11600,200);
+  assert.equal(tracker.update(absent,11601).identityWarning,false);
   assert.equal(tracker.update(absent,12699).tracking,true);
   const paused=tracker.update(absent,12700);
   assert.equal(paused.tracking,false);assert.equal(paused.reason,'away');
-  const returned=tracker.update(wrong,16400);
+  const returned=tracker.update(wrong,15600);
   assert.equal(returned.tracking,false);assert.equal(returned.identityWarning,false);
 });
 test('learning cannot start before the first match and failures retry after 1.5 seconds',()=>{
@@ -167,6 +196,27 @@ test('cached phone evidence cannot confirm use and a new negative resets the can
   tracker.update(signal(3,3400,true),3400);
   assert.equal(tracker.update(signal(3,3400,true,800),4200).tracking,true);
   assert.equal(tracker.update(signal(4,4400,true),4400).reason,'phone');
+});
+
+test('face verification can run while other models load without starting tracking',async()=>{
+  const previous=globalThis.OffscreenCanvas;
+  globalThis.OffscreenCanvas=class{getContext(){return {drawImage(){},getImageData(){return {};}};}};
+  const s=scene(),model=result=>({detectForVideo:()=>result,close(){}});
+  let finishObjects,checks=0,ready=false;
+  const engine=await createCameraInference({FilesetResolver:{forVisionTasks:async()=>({})},FaceLandmarker:{createFromOptions:async()=>model(s.face)},PoseLandmarker:{createFromOptions:async()=>model(s.pose)},HandLandmarker:{createFromOptions:async()=>model(s.hands)}},
+    {load:()=>new Promise(resolve=>{finishObjects=resolve;})},
+    {setBackend:async()=>true,ready:async()=>{},getBackend:()=> 'cpu'},undefined,
+    {earlyFace:true,identityFactory:async()=>({check:async()=>{checks++;return {enrolled:true,matched:true};},close(){}}),onModelsReady:()=>{ready=true;}});
+  try {
+    const early=await engine.detect({width:100,height:100},0);
+    assert.equal(checks,1);assert.equal(early.signals.identity.matched,true);assert.equal(early.signals.reliable,false);
+    assert.equal(createFocusTracker().update(early.signals,0).tracking,false);
+    finishObjects({detect:async()=>[],dispose(){}});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(ready,true);
+    const complete=await engine.detect({width:100,height:100},1000);
+    assert.equal(complete.signals.face,true);assert.equal(checks,2);
+  } finally {engine.close();if(previous===undefined)delete globalThis.OffscreenCanvas;else globalThis.OffscreenCanvas=previous;}
 });
 
 test('slow or failed object inference does not hold face results or reuse stale phone evidence',async()=>{
@@ -496,11 +546,11 @@ test('face loss with visible shoulders uses the same uninterrupted five-second g
   const paused=tracker.update({...healthy,face:false,body:true},7500);
   assert.equal(paused.reason,'away');assert.equal(paused.status,'paused');assert.equal(paused.tracking,false);
 });
-test('brief head-only observations reset face idle before using the head sleep clock', () => {
+test('head-only observations shorter than 500ms reset face idle without pausing', () => {
   const tracker=createFocusTracker();let state;
-  for(let t=0;t<=23000;t+=500){
+  for(let t=0;t<=23000;t+=200){
     const missing=t===10000||t===15000;
-    state=tracker.update({...healthy,face:!missing,head:true,headPosition:[.5,.5],body:true},t);
+    state=tracker.update({...healthy,face:!missing,head:true,headPosition:[.5,.5],body:true,identity:{enrolled:true,matched:true}},t);
     if(t>=2000&&t<IDLE_AT)assert.equal(state.tracking,true);
   }
   assert.equal(state.reason,null);
@@ -628,6 +678,18 @@ test('static books and laptops are context, only actual hand motion is study act
   assert.equal(tracker.update(true,[{x:.4,y:.6},null],2500),false);
   assert.equal(tracker.update(false,still,3000),false);
 });
+test('hand order, disappearance and reacquisition do not simulate study motion',()=>{
+  const tracker=createStudyMotionTracker(),left={x:.2,y:.5},right={x:.8,y:.5};
+  const observe=(time,...hands)=>tracker.update(true,[null,null,...hands],time);
+  assert.equal(observe(0,left,right),false);
+  assert.equal(observe(400,right,left),false);
+  assert.equal(observe(800,right),false);
+  assert.equal(observe(1200,{x:.35,y:.5},right),false,'reacquired hand starts at its current position');
+  assert.equal(observe(1600,right,{x:.45,y:.5}),true,'real motion still counts after another reorder');
+  tracker.reset();
+  assert.equal(observe(2000,{...left,side:'Left'},{...right,side:'Right'}),false);
+  assert.equal(observe(2400,{...left,side:'Right'},{...right,side:'Left'}),true,'crossing hands retain their own reference');
+});
 test('phone diagnostics show confidence below twenty percent and distinguish missing candidates', () => {
   const s=scene();
   for(const [objects,stage]of [[[],'not-found'],[[{...phone,score:.057}],'weak'],[[{...phone,score:.2}],'using'],[[phone],'using']]){
@@ -669,7 +731,7 @@ test('controller propagates behavior pauses, ignores stale results and auto resu
   let now = 0, events = 0;
   const document = { hidden:false, createElement:()=>({setAttribute(){}}),querySelector:()=>null,addEventListener(){} };
   const code = (await readFile(new URL('../camera.js',import.meta.url),'utf8')).replace(/^import .*;\r?\n/gm,'').replace(/^export /gm,'').replaceAll('import.meta.url',JSON.stringify(import.meta.url));
-  const context = vm.createContext({document,crypto,Event,createFocusTracker,performance:{now:()=>now},facePose:()=>null,window:{addEventListener(){},dispatchEvent(){events++;}}});
+  const context = vm.createContext({createStudyGuard,document,crypto,Event,createFocusTracker,performance:{now:()=>now},facePose:()=>null,window:{addEventListener(){},dispatchEvent(){events++;}}});
   vm.runInContext(`${code}\nenabled=true;globalThis.controller={acceptResult,cameraState};`,context);
   const controller = context.controller;
   const send = (time, signals=healthy, captured=time) => { now=time; controller.acceptResult({time:captured,signals}); return controller.cameraState(); };
@@ -694,7 +756,7 @@ test('worker failures retry once in another worker, never on the UI thread, and 
   class Worker { constructor(){workers.push(this);} postMessage(message){this.init=message;} terminate(){this.terminated=true;} }
   const document={hidden:false,createElement:()=>({setAttribute(){}}),querySelector:()=>null,addEventListener(){}};
   const code=(await readFile(new URL('../camera.js',import.meta.url),'utf8')).replace(/^import .*;\r?\n/gm,'').replace(/^export /gm,'').replaceAll('import.meta.url',JSON.stringify(import.meta.url));
-  const context=vm.createContext({URL,Worker,document,crypto,Event,createFocusTracker,setTimeout:()=>0,clearTimeout(){},clearInterval(){},performance:{now:()=>now},facePose:()=>null,window:{addEventListener(){},dispatchEvent(){}}});
+  const context=vm.createContext({createStudyGuard,URL,Worker,document,crypto,Event,createFocusTracker,setTimeout:()=>0,clearTimeout(){},clearInterval(){},performance:{now:()=>now},facePose:()=>null,window:{addEventListener(){},dispatchEvent(){}}});
   vm.runInContext(`${code}\nenabled=true;startRecognitionWorker(revision);globalThis.controller={cameraState};`,context);
   workers[0].onmessage({data:{type:'error',stage:'init',message:'test failure'}});
   assert.equal(workers.length,2);assert.equal(workers[0].terminated,true);assert.equal(workers[1].init.light,true);
@@ -703,6 +765,9 @@ test('worker failures retry once in another worker, never on the UI thread, and 
   assert.equal(workers.length,2);assert.notEqual(workers[1].terminated,true);
   assert.equal(context.controller.cameraState().tracking,false);
   workers[1].onmessage({data:{type:'ready'}});
+  workers[1].onmessage({data:{type:'result',time:0,signals:healthy}});
+  assert.equal(context.controller.cameraState().identityPhase,'loading');
+  workers[1].onmessage({data:{type:'models-ready'}});
   for(now=0;now<=2000;now+=500)workers[1].onmessage({data:{type:'result',time:now,signals:healthy}});
   assert.equal(context.controller.cameraState().tracking,true);
   workers[1].onmessage({data:{type:'error',stage:'frame',message:'second failure'}});
@@ -717,9 +782,10 @@ test('returning from a long background suspension restarts video and the frame l
   const document={hidden:false,createElement:()=>video,querySelector:()=>null,addEventListener:(name,fn)=>handlers[name]=fn};
   class Worker{constructor(){workers.push(this);}postMessage(data){posted.push(data);}terminate(){this.terminated=true;}}
   const code=(await readFile(new URL('../camera.js',import.meta.url),'utf8')).replace(/^import .*;\r?\n/gm,'').replace(/^export /gm,'').replaceAll('import.meta.url',JSON.stringify(import.meta.url));
-  const context=vm.createContext({URL,Worker,document,crypto,Event,createFocusTracker,setTimeout:()=>1,clearTimeout(){},setInterval:fn=>{watch=fn;return 1;},clearInterval(){},
+  const context=vm.createContext({createStudyGuard,URL,Worker,document,crypto,Event,createFocusTracker,setTimeout:()=>1,clearTimeout(){},setInterval:fn=>{watch=fn;return 1;},clearInterval(){},
     createImageBitmap:async()=>({close(){}}),performance:{now:()=>now},facePose:()=>null,window:{addEventListener:(name,fn)=>events[name]=fn,dispatchEvent(){}}});
-  vm.runInContext(`${code}\nenabled=true;stream={getVideoTracks:()=>[{muted:false}]};startRecognitionWorker(revision);ready=true;inFlight=true;startCameraWatchdog(revision);globalThis.controller={cameraState,flight:()=>inFlight};`,context);
+  vm.runInContext(`${code}\nenabled=videoPlaying=true;stream={getVideoTracks:()=>[{muted:false}]};startRecognitionWorker(revision);ready=true;inFlight=true;startCameraWatchdog(revision);globalThis.controller={cameraState,flight:()=>inFlight};`,context);
+  workers[0].onmessage({data:{type:'models-ready'}});
   document.hidden=true;handlers.visibilitychange();now=60000;watch();
   assert.equal(workers.length,1);assert.notEqual(workers[0].terminated,true);
   video.paused=true;document.hidden=false;handlers.visibilitychange();

@@ -1,0 +1,255 @@
+:root[data-theme=dark] {
+  --canvas: #141518;
+  --bg: #1a1c20;
+  --paper: #22252b;
+  --sage: #2b3038;
+  --sand: #2d2e35;
+  --lavender: #2d2b39;
+  --text: #edf0f5;
+  --muted: #b3bac6;
+  --border: #3c424d;
+  --line: var(--border);
+  --control-border: #687486;
+  --accent: #b6c9e8;
+  /* Shared components use this legacy token for accents and links. */
+  --green: var(--accent);
+  --selected: #313d50;
+  --on-accent: #171e29;
+  --danger: #ffb5b5;
+  --danger-bg: #38282f;
+  --warning: #f0cb91;
+  --warning-bg: #352e25;
+  --scrim: #0b0d12b3;
+  --skeleton-base: #303640;
+  --skeleton-light: #444c59;
+  accent-color: var(--accent);
+}
+
+/* Page surfaces, navigation and form controls. */
+:root[data-theme=dark] :is(body, .tab-slide-stage, .tab-slide-page) {
+  background: var(--canvas);
+}
+
+:root[data-theme=dark] :is(dialog, input:not([type=checkbox], [type=radio], [type=range]), select, textarea) {
+  background-color: var(--paper);
+  border-color: var(--control-border);
+  color: var(--text);
+}
+
+:root[data-theme=dark] :is(.goal-dialog, .account-settings, .social-dialog) {
+  background: var(--bg);
+  border-color: var(--border);
+}
+
+:root[data-theme=dark] dialog::backdrop { background: var(--scrim); }
+:root[data-theme=dark] ::placeholder { color: var(--muted); opacity: 1; }
+:root[data-theme=dark] :focus-visible { outline-color: var(--accent); }
+
+:root[data-theme=dark] .bottom-nav::before { background: var(--selected); }
+:root[data-theme=dark] .bottom-nav > a { color: var(--muted); }
+:root[data-theme=dark] .bottom-nav > a[aria-current=page] { color: var(--text); }
+:root[data-theme=dark] .bottom-nav > .nav-ai { color: var(--accent); }
+
+@media (min-width: 768px) {
+  :root[data-theme=dark] .bottom-nav > .nav-ai {
+    background: var(--sage);
+    border-color: var(--border);
+  }
+  :root[data-theme=dark] .bottom-nav > .nav-ai[aria-current=page] { background: transparent; }
+}
+
+:root[data-theme=dark] :is(
+  .primary-button, .round-button.solid, .agent-orb, .composer .send, .cam-end,
+  .bottom-nav > .nav-ai > .nav-icon, .social-launcher-badge,
+  .avatar-item-buy, .avatar-purchase-confirm, .play-avatar-actions > .world-enter-button,
+  .room-actions button:last-child, .room-chat-form button, .world-popup .world-primary,
+  .world-game-actions > button:last-child, .face-enrollment .face-primary
+) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  box-shadow: none;
+}
+
+:root[data-theme=dark] :is(
+  .google-button, .secondary-button, .round-button:not(.solid), .composer,
+  .agent-bar, .suggestions button, .classroom-fields select, .classroom-fields input,
+  .briefing-foot a, .plan-picker-toggle
+) {
+  border-color: var(--control-border);
+}
+
+:root[data-theme=dark] .google-letter { color: #8ab4f8; }
+
+:root[data-theme=dark] :is(
+  .briefing, .goal-item, .subject-tags span, .bubble, .character-card, .coin,
+  .school-schedule td, .school-schedule .lesson, .report-metric, .report-session-list li,
+  .room-peer, .room-dock, .status-toast, .focus-debit-capsule
+) {
+  background: var(--sage);
+  border-color: var(--border);
+}
+
+:root[data-theme=dark] :is(
+  .goal-item.is-complete, .plan-picker-options button:hover, .plan-picker-options button[aria-selected=true],
+  .ai-page .message.user .bubble, .ai-page .suggestions button:hover,
+  .school-result[aria-pressed=true], .school-calendar-day[aria-pressed=true],
+  .room-peer.is-studying, .social-launcher:hover
+) {
+  background: var(--selected);
+  border-color: var(--control-border);
+}
+
+:root[data-theme=dark] :is(
+  .demo-note, .version, .goal-period, .goal-remove, .schedule .alt,
+  .school-schedule caption, .suggestions span, .focus-debit-label
+) { color: var(--muted); }
+
+:root[data-theme=dark] :is(.school-schedule .alt, .schedule .alt) { background: var(--sand); }
+:root[data-theme=dark] :is(.status-toast, .focus-debit-capsule, .agent-bar) { color: var(--text); }
+:root[data-theme=dark] :is(.meal-menu li, .character-card::after) { border-color: var(--border); }
+:root[data-theme=dark] :is(.ai-sheet-handle, .empty-line, .week-chart i, .progress, .report-horizontal-track, .report-bar-track) { background: var(--border); }
+:root[data-theme=dark] :is(.week-chart .today i, .progress i, .model-dot, .status-dot) { background: var(--accent); }
+:root[data-theme=dark] :is(.agent-bar:hover, .ai-page .ai-composer:focus-within) { border-color: var(--accent); box-shadow: none; }
+
+/* Status colors and data visualizations. */
+:root[data-theme=dark] :is(.auth-status.is-error, .social-danger, .timer-panel.camera-paused) {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+:root[data-theme=dark] :is(
+  .goal-remove:hover, .timer-panel.camera-paused :is(.timer, [data-timer-state]), .cam-warning,
+  .cam-video-mount[data-avatar-phase=rejected] .cam-recognition, .cam-debug [data-active=true] dd,
+  .school-calendar-weekdays > :nth-child(7n+1), .school-calendar-day:nth-child(7n+1) .school-calendar-number
+) { color: var(--danger); }
+
+:root[data-theme=dark] :is(.school-calendar-weekdays > :nth-child(7n), .school-calendar-day:nth-child(7n) .school-calendar-number) {
+  color: var(--accent);
+}
+
+:root[data-theme=dark] .school-calendar-day[aria-current=date] .school-calendar-number {
+  color: var(--on-accent);
+}
+
+:root[data-theme=dark] :is(.report-note, .face-warning) {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+/* Report series colors are supplied inline by the chart renderer. */
+:root[data-theme=dark] :is(.report-column, .report-breakdown-row):nth-child(6n+1) { --report-series: #9bb7df; }
+:root[data-theme=dark] :is(.report-column, .report-breakdown-row):nth-child(6n+2) { --report-series: #c4a9de; }
+:root[data-theme=dark] :is(.report-column, .report-breakdown-row):nth-child(6n+3) { --report-series: #d9ad91; }
+:root[data-theme=dark] :is(.report-column, .report-breakdown-row):nth-child(6n+4) { --report-series: #d5a7b9; }
+:root[data-theme=dark] :is(.report-column, .report-breakdown-row):nth-child(6n+5) { --report-series: #a8b6ce; }
+:root[data-theme=dark] :is(.report-column, .report-breakdown-row):nth-child(6n+6) { --report-series: #d6bf95; }
+:root[data-theme=dark] :is(.report-bar, .report-horizontal-track > span) {
+  background-color: var(--report-series, var(--accent)) !important;
+}
+:root[data-theme=dark] .report-hours .report-bar { background-color: var(--accent) !important; }
+
+/* Camera guidance and the dynamically loaded face enrollment dialog. */
+:root[data-theme=dark] .study-cam[data-state=warning] { --cam-color: var(--warning); }
+:root[data-theme=dark] .study-cam:is([data-state=paused], [data-state=error]) { --cam-color: var(--danger); }
+:root[data-theme=dark] .cam-video-mount { background: var(--canvas); }
+:root[data-theme=dark] .cam-video-mount:has(.cam-avatar) {
+  background: radial-gradient(ellipse at 50% 45%, var(--sage), var(--canvas));
+}
+:root[data-theme=dark] .cam-avatar { color: var(--muted); }
+:root[data-theme=dark] .cam-avatar.is-tracked { color: var(--accent); }
+:root[data-theme=dark] .cam-close { background: var(--scrim); }
+:root[data-theme=dark] .avatar-shadow { fill: #b6c9e813; }
+:root[data-theme=dark] .avatar-ground { stroke: #b6c9e835; }
+:root[data-theme=dark] .cam-debug dl > div { border-color: var(--border); }
+:root[data-theme=dark] [data-identity-phase=enrolling] .timer-panel:not(.camera-paused) {
+  background: var(--sage);
+  border-color: var(--control-border);
+}
+
+:root[data-theme=dark] .face-enrollment { color-scheme: dark; border-color: var(--border); }
+:root[data-theme=dark] :is(.face-privacy-card, .face-steps li span, .face-enrollment .face-unranked) {
+  background: var(--sage);
+  border-color: var(--border);
+}
+:root[data-theme=dark] :is(.face-protector-mark, .face-privacy-card li::before, .face-enrollment button) {
+  background: var(--selected);
+  border-color: var(--control-border);
+  color: var(--text);
+}
+:root[data-theme=dark] .face-enrollment [data-face-cancel] { background: transparent; }
+:root[data-theme=dark] .face-enrollment [data-face-cancel]:hover { background: var(--sage); }
+:root[data-theme=dark] :is(.face-steps, .face-protector-version, .face-privacy-details) { border-color: var(--border); }
+:root[data-theme=dark] :is(
+  .face-subtitle, .face-steps, .face-account, .face-enrollment [role=status],
+  .face-privacy-card li span, .face-privacy-details, .face-reauth-note,
+  .face-enrollment .face-consent, .face-enrollment .face-privacy-footer,
+  .face-enrollment [data-face-cancel], .face-preview-hint, .face-scan-camera-note,
+  .face-scan-center .face-scan-count, .face-protector-version
+) { color: var(--muted); }
+:root[data-theme=dark] :is(.face-protector-brand, .face-privacy-card li strong, .face-enrollment .face-unranked, .face-scan-center .face-scan-live) { color: var(--text); }
+:root[data-theme=dark] :is(.face-scan-symbol, .face-scan-percent) { color: var(--accent); }
+:root[data-theme=dark] .face-enrollment[data-phase=DAILY_REAUTH_REQUIRED] .face-steps li:first-child,
+:root[data-theme=dark] .face-enrollment[data-phase=ENROLLING] .face-steps li:nth-child(2) { color: var(--accent); }
+:root[data-theme=dark] .face-preview { background: var(--canvas); box-shadow: inset 0 0 36px #0005; }
+:root[data-theme=dark] .face-preview[data-tracking=hold] :is(.face-scan-symbol, .face-scan-live) { color: var(--warning); }
+:root[data-theme=dark] .face-scan-camera-note::before { background: var(--accent); }
+:root[data-theme=dark] .face-enrollment[data-phase=VERIFIED] .face-preview { outline-color: var(--accent); }
+/* The live scan renderer sets SVG presentation attributes. */
+:root[data-theme=dark] .face-scan-ring line[stroke="#5df5a4"] { stroke: var(--text); }
+:root[data-theme=dark] .face-scan-ring line[stroke="#36c78b"] { stroke: var(--accent); }
+:root[data-theme=dark] .face-scan-ring line[stroke="#68bda0"] { stroke: #91a6c5; }
+:root[data-theme=dark] .face-scan-ring text[fill="#37d99a"] { fill: var(--accent); }
+
+/* Avatar shop chrome and the study room. Avatar artwork supplies its own palette. */
+:root[data-theme=dark] .account-award {
+  background: var(--selected);
+  color: var(--accent);
+  border-color: var(--control-border);
+}
+:root[data-theme=dark] :is(.account-award[data-award=ADMIN], .friend-rank-badge) {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border-color: #79684c;
+}
+:root[data-theme=dark] .avatar-shop-card .rarity-레어 { color: var(--accent); }
+:root[data-theme=dark] .avatar-shop-card .rarity-에픽 { color: #d6b8ee; }
+:root[data-theme=dark] .avatar-shop-card[data-item-tier=레전드] .avatar-rarity { color: var(--warning); }
+:root[data-theme=dark] .avatar-shop-card[data-item-tier=신화] .avatar-rarity { color: #f0b7f2; }
+:root[data-theme=dark] .avatar-shop-card[data-item-tier=신화] {
+  background-image: linear-gradient(145deg, #ff92cf22, #ffdc9422, #9bb7df22, #ae9cff33);
+}
+
+:root[data-theme=dark] :is(dialog.study-world-dialog, .study-world, .study-world > .room-social, .world-topbar) {
+  background: var(--bg);
+  color: var(--text);
+  border-color: var(--border);
+}
+:root[data-theme=dark] .study-world > .study-room {
+  background: radial-gradient(ellipse at center, var(--sage), var(--canvas));
+}
+:root[data-theme=dark] :is(
+  .room-panel, .world-emotes, .room-person-wrap, .room-friend-list, .room-invitations,
+  .room-chat, .room-chat-form input, dialog.world-popup,
+  .study-world button:not(.world-exit, .room-actions button:last-child, .room-chat-form button),
+  .world-popup button:not(.world-primary, .world-game-actions > button:last-child)
+) {
+  background: var(--paper);
+  border-color: var(--control-border);
+  color: var(--text);
+}
+:root[data-theme=dark] :is(.study-world, .world-popup) button:is(:hover:not(:disabled), [aria-pressed=true]) {
+  border-color: var(--accent);
+}
+:root[data-theme=dark] :is(.study-world, .world-popup) button[aria-pressed=true] { background: var(--selected); }
+:root[data-theme=dark] .world-exit {
+  background: var(--sage) !important;
+  border-color: var(--control-border) !important;
+  color: var(--text) !important;
+}
+:root[data-theme=dark] :is(.world-eyebrow, .world-count, .room-social > h3, .room-message time, .room-hint, .world-popup-body small) { color: var(--muted); }
+:root[data-theme=dark] .room-chat:empty::before { color: var(--muted); }
+:root[data-theme=dark] .room-message p { color: var(--text); }
+:root[data-theme=dark] :is(.room-message strong, .world-online-dot, .world-game-result) { color: var(--accent); }
+:root[data-theme=dark] :is(.world-status, .world-game-vs > span, .world-game-reveal span:nth-child(2)) { color: var(--warning); }

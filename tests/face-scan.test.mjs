@@ -128,6 +128,20 @@ test('scan identity requires both RGB and 3D agreement with five fresh votes',()
   for(let i=0;i<6;i++)assert.equal(matcher.observeCandidates([{values:owner,shape:different}]).matched,false,'incompatible 3D geometry cannot authenticate on RGB alone');
   matcher.reset();for(let i=0;i<5;i++)matcher.observeCandidates([candidate],{vote:false});assert.equal(matcher.observeCandidates([candidate],{vote:false}).matched,false);
 });
+test('face shape matching rejects 79% and accepts exactly 80%',()=>{
+  const profile=sampleScanProfile(owner);
+  const shape=profile.shapes[0].map((value,index)=>index%3===2?0:value);
+  profile.shapes=profile.shapes.map(()=>shape);
+  const matcher=createScanIdentityMatcher(profile);
+  for(const [score,expected] of [[.79,false],[.8,true]]){
+    const observed=shape.map((value,index)=>index%3===2?-.25*Math.log(score):value);
+    assert.equal(faceShapeScore(shape,observed),score);
+    matcher.reset();
+    for(let i=0;i<4;i++)assert.equal(matcher.observeCandidates([{values:owner,shape:observed}]).matched,false);
+    const result=matcher.observeCandidates([{values:owner,shape:observed}]);
+    assert.equal(result.meshThreshold,.8);assert.equal(result.matched,expected);
+  }
+});
 test('multi-face scan matching selects the owner rather than another visible face',()=>{
   const profile=sampleScanProfile(owner),matcher=createScanIdentityMatcher(profile),shape=profile.shapes[0],wrong=normalized(Array(2048).fill(1));
   for(let i=0;i<5;i++)matcher.observeCandidates([{values:wrong,shape},{values:owner,shape}]);

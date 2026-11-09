@@ -2,7 +2,7 @@ import {HttpsError} from './platform-http.js';
 import {Timestamp,FieldValue} from './platform-store.js';
 import {spendFocusTime} from './focus-time.js';
 import {AVATAR_CATALOG,avatarItem,ownedAvatarItems} from './avatar-catalog.js';
-import {friendHighlights} from './friend-highlights.js';
+import {friendHighlights,sharedStudySeconds} from './friend-highlights.js';
 import {validateRoom} from './study-room.js';
 
 export const SCHOLARS=Object.freeze(['아인슈타인','뉴턴','마리 퀴리','다빈치','다윈','갈릴레이','테슬라','앨런 튜링','에이다 러브레이스','라마누잔','파인만','파스퇴르','장영실','정약용','세종대왕','캐서린 존슨']);
@@ -37,8 +37,14 @@ export async function readPlayProfile(db,uid,target=uid){
   const focusBalanceSeconds=target===uid?(await db.doc(`users/${uid}/stats/focusTime`).get()).data()?.balanceSeconds||0:undefined;
   const dates=Array.from({length:7},(_,i)=>new Date(Date.now()+9*3600000-i*86400000).toISOString().slice(0,10));
   const records=await db.getAll(db.doc(`users/${target}/stats/summary`),...dates.map(date=>db.doc(`users/${target}/dailyStats/${date}`)));
-  const seconds=row=>Math.max(0,Number(row?.totalSeconds)||0),days=records.slice(1).map((doc,i)=>({date:dates[i],seconds:seconds(doc.data())}));
+  const seconds=target===uid?(row=>Math.max(0,Number(row?.totalSeconds)||0)):sharedStudySeconds;
+  const days=records.slice(1).map((doc,i)=>({date:dates[i],seconds:seconds(doc.data())}));
   const studyStats={totalSeconds:seconds(records[0].data()),todaySeconds:days[0].seconds,weekSeconds:days.reduce((sum,day)=>sum+day.seconds,0),days};
+  if(target===uid){
+    const subjects=new Set();
+    for(const record of records.slice(1))for(const [subject,time] of Object.entries(record.data()?.subjectSeconds||{}))if(time>0)subjects.add(subject);
+    studyStats.subjectCount=subjects.size;
+  }
   const viewer=target===uid?profile:(await db.doc(`users/${uid}`).get()).data()||{};
   const highlights=await friendHighlights(db,{...viewer,uid},[{uid:target,profile}]);
   return {uid:target,displayName:profile.displayName,avatar:profile.avatar||{character:'sprout',hat:'none',glasses:'none',effect:'none'},bio:profile.bio||'',personality:profile.studyPersonality||null,studyStats,friendSummary:highlights.get(target),...(target===uid?{studyRoom:profile.studyRoom||null,focusBalanceSeconds,phoneBalanceSeconds:profile.phoneBalanceSeconds||0,avatarInventory:ownedAvatarItems(profile)}:{})};

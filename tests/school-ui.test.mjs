@@ -4,6 +4,7 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { chatHistory, completedAnswer } from '../chat-state.js';
 import { briefingPeriod } from '../functions/briefing-period.js';
+import { schoolQuery } from '../functions/school-service.js';
 
 const cacheSource=(await readFile(new URL('../client-cache.js',import.meta.url),'utf8')).replace(/^export /gm,'');
 const source=cacheSource+'\n'+(await readFile(new URL('../integrations.js',import.meta.url),'utf8')).replace(/^import .*;\r?\n/gm,'').replace(/^export /gm,'');
@@ -12,6 +13,8 @@ function schoolUi() {
   const handlers={},requests=[];
   const context=vm.createContext({
     briefingPeriod,
+    showToast(){},
+    setLoading(){},
     document:{querySelectorAll:()=>[],querySelector:selector=>selector==='[data-school-meals]'?{}:null,addEventListener:(name,handler)=>{handlers[name]=handler;}},
     window:{addEventListener(){}},
     getStudyData:()=>context.profileState,
@@ -71,7 +74,7 @@ test('briefing reuses its slot cache on reopening and only manual refresh forces
 
 test('account school and classroom follow profile loading, saved changes and missing registration',async()=>{
   const dataSource=cacheSource+'\n'+(await readFile(new URL('../data.js',import.meta.url),'utf8'))
-    .replace(/^import .*;\r?\n/gm,'').replace('export function getStudyData','function getStudyData').split(/\r?\ntry \{\r?\n  authServices/)[0];
+    .replace(/^import .*;\r?\n/gm,'').replace(/^export /gm,'').split(/\r?\nasync function initializeStudyData\(/)[0];
   const school={textContent:''},classroom={textContent:''};
   const context=vm.createContext({
     getAuthUser:()=>({uid:'account-user'}),cameraState:()=>({}),
@@ -107,7 +110,7 @@ test('account settings prefill the saved school and let classroom changes save w
   assert.equal(button.disabled,false);
 });
 
-test('calendar-only overview skips meal and timetable provider requests',async()=>{
+test('calendar and dated meal requests each query only the requested provider and range',async()=>{
   const backend=await readFile(new URL('../functions/integrations.js',import.meta.url),'utf8');
   const handler=backend.slice(backend.indexOf('export const getSchoolOverview'),backend.indexOf('export const getAiUsage')).replace('export const','globalThis.');
   const calls=[];
@@ -115,7 +118,7 @@ test('calendar-only overview skips meal and timetable provider requests',async()
     onCall:(_,fn)=>fn,options:{},neisKey:{},neis:()=>{},uid:()=> 'user',rateLimit:async()=>{},
     db:{doc:()=>({get:async()=>({data:()=>({school:{name:'학교'}})})})},
     schoolDates:()=>({date:'2026-10-21',days:['2026-10-19','2026-10-20','2026-10-21','2026-10-22','2026-10-23']}),
-    input:fn=>fn(),schoolMonth:value=>value,schoolCalendarRange:start=>({start,end:'2026-11-30'}),
+    input:fn=>fn(),schoolQuery,schoolMonth:value=>value,schoolCalendarRange:start=>({start,end:'2026-11-30'}),
     loadSchoolData:async(_,query)=>{calls.push(query);return {events:[],errors:{}};},
   });
   vm.runInContext(handler,context);
@@ -123,6 +126,11 @@ test('calendar-only overview skips meal and timetable provider requests',async()
   assert.equal(calls.length,1);assert.deepEqual(Array.from(calls[0].types),['events']);
   assert.equal(calls[0].start,'2026-11-01');assert.equal(calls[0].end,'2026-11-30');
   assert.equal(result.meals,undefined);assert.equal(result.timetable,undefined);
+  const mealDate='2028-02-29';
+  assert.equal((await context.getSchoolOverview({data:{mealDate}})).mealDate,mealDate);
+  assert.deepEqual(calls[1],{start:mealDate,end:mealDate,types:['meals']});
+  await assert.rejects(context.getSchoolOverview({data:{mealDate:'2026-02-29'}}),/invalid-range/);
+  assert.equal(calls.length,2);
 });
 test('calendar navigation crosses years, accepts leap February and returns to current Korean month',async()=>{
   const {ui,requests,handlers}=schoolUi();
@@ -172,6 +180,27 @@ test('changing months preserves meals and timetable DOM through calendar loading
   requests[2].resolve(overview('2026-12'));await settle();
   assert.equal(ui.state().calendar.data,current);
   assert.deepEqual(containers.slice(0,2).map(container=>container.replacements),replacements);
+});
+
+test('choosing a meal date preserves the other panels, ignores late meals and returns to today',async()=>{
+  const {ui,requests,context,handlers}=schoolUi();
+  const field={value:'',min:'2000-01-01',max:'2099-12-31',validity:{valid:true},matches:selector=>selector==='[data-school-meal-date]'};
+  const mealList={textContent:'',hasAttribute:name=>name==='data-school-meals',replaceChildren(){}};
+  context.document.querySelector=selector=>selector==='[data-school-meals]'?mealList:selector==='[data-school-meal-date]'?field:null;
+  context.document.querySelectorAll=selector=>selector==='[data-school-meals], [data-school-timetable], [data-school-events]'?[mealList]:[];
+  await ui.sync();requests[0].resolve(overview('2026-10'));await settle();
+  const today=field.value,base=ui.state();
+  const select=value=>{field.value=value;handlers.change({target:field});};
+  select('2099-11-10');select('2099-11-11');
+  assert.deepEqual(requests.slice(1).map(request=>request.data.mealDate),['2099-11-10','2099-11-11']);
+  assert.equal(mealList.textContent,'로딩 중…');
+  requests[2].resolve({mealDate:'2099-11-11',meals:[],errors:{}});await settle();
+  assert.match(mealList.textContent,/선택한 날짜에 등록된 급식 정보가 없습니다/);
+  requests[1].resolve({mealDate:'2099-11-10',meals:[],errors:{meals:true}});await settle();
+  assert.match(mealList.textContent,/선택한 날짜에 등록된 급식 정보가 없습니다/);
+  assert.equal(ui.state().school,base.school);assert.equal(ui.state().calendar,base.calendar);
+  handlers.click({target:{closest:selector=>selector==='[data-school-meal-today]:not(:disabled)'?{}:null}});
+  assert.equal(field.value,today);assert.equal(requests.length,3);
 });
 
 test('empty chat completion rolls back the failed turn and the next question succeeds',async()=>{

@@ -114,16 +114,16 @@ test('goal popup expands from its card, closes back to it and supports reduced m
   }
 });
 
-test('success notifications use one screen toast and only the latest timer can dismiss it',async()=>{
+test('notifications reuse the Focus Time capsule and only the latest timer dismisses it',async()=>{
   const source=(await readFile(new URL('../notifications.js',import.meta.url),'utf8')).replace(/^export /gm,'');
   const timers=new Map();let next=0,toast,appended=0;
   const context=vm.createContext({
-    document:{body:{append:element=>{toast=element;appended++;}},querySelector:()=>toast,createElement:()=>({dataset:{},setAttribute(){},matches:()=>false,showPopover(){this.shown=true;},hidePopover(){this.shown=false;}})},
-    window:{setTimeout:(fn,delay)=>{assert.equal(delay,4000);timers.set(++next,fn);return next;},clearTimeout:id=>timers.delete(id)},
+    document:{body:{append:element=>{toast=element;appended++;}},querySelector:()=>toast,createElement:()=>({dataset:{},style:{},setAttribute(){},replaceChildren(...children){this.children=children;},showPopover(){this.shown=true;},hidePopover(){this.shown=false;},remove(){this.removed=true;}})},
+    matchMedia:()=>({matches:true}),setTimeout:(fn,delay)=>{assert.equal(delay,2000);timers.set(++next,fn);return next;},clearTimeout:id=>timers.delete(id),
   });
   vm.runInContext(`${source}\nshowToast('닉네임을 저장했습니다.');`,context);
-  assert.equal(toast.textContent,'닉네임을 저장했습니다.');assert.equal(toast.hidden,false);assert.equal(toast.className,'status-toast');
+  assert.equal(toast.children[0].textContent,'닉네임을 저장했습니다.');assert.equal(toast.className,'focus-debit-capsule');
   vm.runInContext("showToast('계정에 저장했습니다.');",context);
-  assert.equal(appended,1);assert.equal(timers.size,1);assert.equal(toast.textContent,'계정에 저장했습니다.');
-  [...timers.values()][0]();assert.equal(toast.hidden,true);assert.equal(toast.shown,false);
+  assert.equal(appended,1);assert.equal(timers.size,1);assert.equal(toast.children[0].textContent,'계정에 저장했습니다.');
+  [...timers.values()][0]();assert.equal(toast.removed,true);assert.equal(toast.shown,false);
 });

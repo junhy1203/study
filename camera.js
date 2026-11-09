@@ -1,9 +1,11 @@
-import { facePose, paintAvatar } from './camera-avatar.js?v=20261024-17';
-import {readableNetworkError} from './network-errors.js?v=20261103-privateui1';
-import { createFocusTracker, FOCUS_LIMITS } from './camera-focus.js?v=20261104-1';
+import { facePose, paintAvatar } from './camera-avatar.js?v=20261108-recovery2';
+import { FACE_SUCCESS_MS } from './camera-face-effect.js?v=20261108-recovery2';
+import {CONNECTION_MESSAGE,isNetworkFailure} from './network-errors.js?v=20261103-privateui1';
+import { createFocusTracker } from './camera-focus.js?v=20261109-pitch1';
 import { paintCameraDebug } from './camera-debug.js?v=20261104-1';
-import {showToast} from './notifications.js?v=20261022-18';
-import {prepareFaceSession,waitForFaceSessionReady,waitForFaceVerification,faceWorkerContext,handleFaceWorkerRPC,handleFaceWorkerEvent,attachFacePreview,lockFaceSession} from './face-session.js?v=20261105-turn1';
+import {showToast} from './notifications.js?v=20261109-capsule1';
+import {createStudyGuard} from './study-guard.js?v=20261106-guard1';
+import {prepareFaceSession,waitForFaceSessionReady,waitForFaceVerification,faceWorkerContext,handleFaceWorkerRPC,handleFaceWorkerEvent,attachFacePreview,lockFaceSession} from './face-session.js?v=20261107-face-meals1';
 // Raw frames stay off-screen; only derived behavior and tracking state reach the UI.
 const focusTracker = createFocusTracker();
 export const CAMERA_INFERENCE_INTERVAL_MS=400;
@@ -25,109 +27,115 @@ let avatarPose = null;
 let fallbackAttempted = false;
 let stream, worker, loop, watchdog, loadingDeadline;
 let videoFrameHandle=null;
+let videoPlaying=false, startupToken=null;
 let enabled = false, tracking = false, status = 'off', message = '얼굴 인식으로 학습 시작';
-let identityStatus=null;
 let identityPhase=null;
+let verificationSuccessPending=false;
 let ready = false, inFlight = false, lastResult = 0, revision = 0, lastVideoTime = -1, frameEpoch = 0;
-let focusPanel, focusOrigin, previousFocus;
-let morphFrame;
+let modelsPending = false;
+let focusPanel, previousFocus, verificationDismissal;
 let manuallyPaused = false;
-let enrollmentOnly=false;
-let companionUntil=0;
-function cameraVisible(){return !document.hidden || performance.now()<companionUntil;}
-export function setCameraCompanion(durationMs){
-  companionUntil=performance.now()+Math.max(0,Math.min(30000,durationMs));
+let enrollmentOnly=false,unranked=false;
+const studyGuard=createStudyGuard({window,document,now:()=>performance.now(),onChange:handleStudyGuard});
+function handleStudyGuard({blocked}){
+  if(!enabled||enrollmentOnly)return;
+  if(blocked){
+    frameEpoch++;cancelFrameLoop();inFlight=false;lastVideoTime=-1;
+    focusTracker.reset(true);diagnostics=null;
+    setStatus('paused','학습 화면을 벗어났습니다 · 일시정지');
+  }else resumeCameraRecognition();
+}
+function cameraVisible(){return !document.hidden && !studyGuard.blocked;}
+export function setCameraCompanion(_durationMs){
+  // SP word ownership must not bypass this device's screen-presence policy.
   if(enabled && !cameraVisible())setStatus('paused','화면을 벗어났습니다 · 일시정지');
 }
 export const cameraController = crypto.randomUUID();
-export function cameraState() { return { enabled, tracking, status, message, reason, manuallyPaused, identityPhase,enrollmentOnly }; }
+export function cameraState() { return { enabled, tracking, status, message, reason, manuallyPaused, identityPhase,enrollmentOnly,unranked,guardPauseAt:studyGuard.pauseAt }; }
 export function toggleCameraPause() {
   if (!enabled) return;
   manuallyPaused = !manuallyPaused;
-  focusTracker.reset(true,false); diagnostics = null;
-  setStatus('scanning', '얼굴을 다시 확인하는 중…');
+  if (manuallyPaused) {
+    verificationSuccessPending=false;
+    setStatus('paused', '수동 일시정지 · 재개 버튼을 눌러 주세요');
+  } else resumeCameraRecognition(true);
 }
 export function openCameraFocus(origin) {
   if (focusPanel) return;
   const template = document.querySelector('#camera-focus-template');
   if (!template) return;
-  previousFocus = document.activeElement;
-  focusOrigin = origin.getBoundingClientRect();
+  previousFocus = origin;
   focusPanel = template.content.firstElementChild.cloneNode(true);
   const subject = document.querySelector('[data-study-subject]');
-  focusPanel.querySelector('[data-focus-subject]').textContent = subject?.selectedOptions[0]?.textContent || '학습';
+  const subjectName = subject?.selectedOptions[0]?.textContent || '학습';
+  focusPanel.querySelector('[data-focus-subject]').textContent = subjectName;
+  focusPanel.querySelector('[data-focus-current-subject]').textContent = subjectName;
+  for (const metric of focusPanel.querySelectorAll('[data-time]')) {
+    const source = document.querySelector(`.app > main [data-time="${metric.dataset.time}"]`);
+    if (!source) continue;
+    metric.textContent = source.textContent;
+    metric.setAttribute('aria-busy', source.getAttribute('aria-busy') || 'false');
+  }
+  const streak = focusPanel.querySelector('[data-streak]');
+  const sourceStreak = document.querySelector('.app > main [data-streak]');
+  if (sourceStreak) {
+    streak.textContent = sourceStreak.textContent;
+    streak.setAttribute('aria-busy', sourceStreak.getAttribute('aria-busy') || 'false');
+  }
   const retry=document.createElement('button');retry.type='button';retry.textContent='학습 시작 다시 시도';retry.hidden=true;
   retry.dataset.studyAction='start';retry.dataset.cameraToggle='';retry.dataset.cameraRetry='';
   focusPanel.querySelector('.timer-panel').append(retry);
   document.body.append(focusPanel);
   document.querySelector('.app').inert = true;
   document.documentElement.classList.add('camera-focus-open');
+  // Commit the offscreen position before camera startup paints the first status.
+  focusPanel.querySelector('[data-focus-verification]')?.getBoundingClientRect();
   if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    const panel = focusPanel;
-    panel.classList.add('is-morphing');
-    const target = panel.querySelector('.cam-viewport').getBoundingClientRect();
-    const frame = document.createElement('div');
-    frame.className = 'cam-morph-frame';
-    frame.setAttribute('aria-hidden', 'true');
-    for (const corner of origin.querySelectorAll('.cam-corner')) frame.append(corner.cloneNode(true));
-    const face = origin.querySelector('.cam-face')?.cloneNode(true);
-    if (face) frame.append(face);
-    document.body.append(frame); morphFrame = frame;
-    const geometry = rect => ({ top: `${rect.top}px`, left: `${rect.left}px`, width: `${rect.width}px`, height: `${rect.height}px` });
-    panel.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 450, fill: 'both', easing: 'ease-out' });
-    if (face) {
-      const destination = Math.min(target.width, target.height) * 120 / 320;
-      face.style.strokeWidth = '4';
-      face.animate([
-        { width: '48px', height: '48px', strokeWidth: '5.75', transform: 'translate(-50%,-50%) scale(1)' },
-        { width: `${destination}px`, height: `${destination}px`, transform: 'translate(-50%,-50%) scale(1.1,.92)', offset: .7 },
-        { width: `${destination}px`, height: `${destination}px`, transform: 'translate(-50%,-50%) scale(.96,1.05)', offset: .86 },
-        { width: `${destination}px`, height: `${destination}px`, transform: 'translate(-50%,-50%) scale(1)' },
-      ], { duration: 900, fill: 'forwards', easing: 'cubic-bezier(.2,.7,.2,1)' });
+    for (const item of focusPanel.querySelectorAll('.focus-header, .focus-content > :not(.focus-verification):not(dialog)')) {
+      item.animate([{ opacity: 0, transform: 'translateY(48px)' }, { opacity: 1, transform: 'translateY(0)' }],
+        { duration: 420, easing: 'cubic-bezier(.22,.72,.26,1)' });
     }
-    for (const corner of frame.querySelectorAll('.cam-corner')) corner.animate([{ width: '19px', height: '19px' }, { width: '40px', height: '40px' }], { duration: 900, fill: 'forwards', easing: 'cubic-bezier(.22,.68,.1,1)' });
-    frame.animate([geometry(focusOrigin), geometry(target)], { duration: 900, fill: 'forwards', easing: 'cubic-bezier(.22,.68,.1,1)' }).finished.then(() => {
-      if (panel.dataset.closing) { frame.remove(); return; }
-      panel.classList.remove('is-morphing');
-      frame.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 220, fill: 'forwards' }).finished.then(() => frame.remove()).catch(() => frame.remove());
-      if (morphFrame === frame) morphFrame = null;
-    }).catch(() => { if (!panel.dataset.closing) panel.classList.remove('is-morphing'); frame.remove(); });
   }
   focusPanel.querySelector('.cam-end').focus();
 }
 export async function closeCameraFocus() {
   const panel = focusPanel;
-  if (!panel) return;
+  if (!panel || panel.dataset.closing) return;
   panel.dataset.closing = 'true';
-  const currentFrame = morphFrame?.getBoundingClientRect();
-  const currentCorner = morphFrame?.querySelector('.cam-corner')?.getBoundingClientRect().width;
-  focusPanel = null;
-  for (const animation of morphFrame?.getAnimations() || []) animation.cancel();
-  morphFrame?.remove(); morphFrame = null;
+  clearTimeout(verificationDismissal);
   if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    const viewport = panel.querySelector('.cam-viewport');
-    const source = currentFrame || viewport.getBoundingClientRect();
-    const origin = document.querySelector('.app > main [data-camera-toggle]');
-    const target = origin?.getBoundingClientRect() || focusOrigin;
-    const frame = document.createElement('div');
-    frame.className = 'cam-morph-frame';
-    frame.setAttribute('aria-hidden', 'true');
-    for (const corner of viewport.querySelectorAll('.cam-corner')) frame.append(corner.cloneNode(true));
-    const face = origin?.querySelector('.cam-face')?.cloneNode(true);
-    if (face) frame.append(face);
-    document.body.append(frame);
-    panel.classList.add('is-morphing');
-    const timing = { duration: 650, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'forwards' };
-    const geometry = rect => ({ top: `${rect.top}px`, left: `${rect.left}px`, width: `${rect.width}px`, height: `${rect.height}px` });
-    panel.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 350, fill: 'forwards', easing: 'ease-out' });
-    for (const corner of frame.querySelectorAll('.cam-corner')) corner.animate([{ width: `${currentCorner || 35}px`, height: `${currentCorner || 35}px` }, { width: '19px', height: '19px' }], timing);
-    if (face) face.animate([{ opacity: 0, transform: 'translate(-50%,-50%) scale(1.4)' }, { opacity: 0, offset: .55 }, { opacity: 1, transform: 'translate(-50%,-50%) scale(1)' }], timing);
-    await frame.animate([geometry(source), geometry(target)], timing).finished.catch(() => {});
-    frame.remove();
+    const items = panel.querySelectorAll('.focus-header, .focus-content > :not(.focus-verification):not(dialog)');
+    const animations = [...items].map(item => item.animate([
+      { opacity: getComputedStyle(item).opacity, transform: getComputedStyle(item).transform },
+      { opacity: 0, transform: 'translateY(48px)' },
+    ], { duration: 300, fill: 'forwards', easing: 'cubic-bezier(.4,0,1,1)' }).finished.catch(() => {}));
+    animations.push(panel.animate([{ opacity: 1 }, { opacity: 0 }], { delay: 180, duration: 180, fill: 'forwards', easing: 'ease-out' }).finished.catch(() => {}));
+    await Promise.all(animations);
   }
+  focusPanel = null;
   panel.remove(); document.querySelector('.app').inert = false;
   document.documentElement.classList.remove('camera-focus-open');
   previousFocus?.focus(); paint();
+}
+
+function paintFocusVerification(popup, verification, verified) {
+  const available = enabled && !manuallyPaused && !studyGuard.blocked && status !== 'error' && !focusPanel.dataset.closing;
+  const checking = available && (status === 'opening' || verification?.required ||
+    status === 'scanning' && (unranked ? !diagnostics : identityPhase !== 'verified'));
+  if (available && verified) {
+    clearTimeout(verificationDismissal);
+    popup.dataset.phase = 'success';
+    const delay = matchMedia('(prefers-reduced-motion: reduce)').matches ? 450 : FACE_SUCCESS_MS + 180;
+    verificationDismissal = setTimeout(() => {
+      popup.dataset.phase = 'hidden';
+      paint();
+    }, delay);
+  } else if (!available || checking || popup.dataset.phase !== 'success') {
+    clearTimeout(verificationDismissal);
+    const phase = checking ? 'checking' : 'hidden';
+    if (popup.dataset.phase !== phase) popup.dataset.phase = phase;
+  }
+  return popup.dataset.phase === 'success';
 }
 
 function paint() {
@@ -138,27 +146,41 @@ function paint() {
   root.dataset.identityPhase=identityPhase||'';
   root.classList.toggle('is-open', enabled);
   const mount = root.querySelector('[data-camera-video]');
-  paintAvatar(mount, avatarPose, tracking, manuallyPaused ? 'manual-paused' : ['mismatch','multiple'].includes(identityStatus) ? 'identity-failed' : status==='paused'&&reason ? 'behavior-warning' : status,
-    performance.now(), { remainingMs: diagnostics?.resumeRemainingMs, durationMs: FOCUS_LIMITS.resume });
-  let identitySummary=root.querySelector('[data-camera-identity-summary]');
-  if(!identitySummary){identitySummary=document.createElement('p');identitySummary.dataset.cameraIdentitySummary='';identitySummary.className='cam-identity-summary';root.append(identitySummary);}
-  const score=diagnostics?.identity?.score,verification=diagnostics?.verification;
-  identitySummary.hidden=!enabled||enrollmentOnly;
-  identitySummary.textContent=verification?.required?'자리 복귀 · 얼굴과 입체 윤곽 확인 중':'본인 인증 완료 · 머리 위치로 자리 감지';
-  let gate=root.querySelector('[data-camera-face-gate]');
-  if(!gate){gate=document.createElement('div');gate.dataset.cameraFaceGate='';gate.className='cam-face-gate';gate.setAttribute('role','status');gate.innerHTML='<span class="cam-face-gate-icon" aria-hidden="true"><svg viewBox="0 0 48 48" width="42" height="42" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 16V9a3 3 0 0 1 3-3h7m16 0h7a3 3 0 0 1 3 3v7m0 16v7a3 3 0 0 1-3 3h-7m-16 0H9a3 3 0 0 1-3-3v-7M16 18v3m16-3v3m-8-4v10h-3m-5 5q8 7 16 0"/></svg></span><span data-face-gate-message></span>';root.append(gate);}
-  gate.hidden=!enabled||enrollmentOnly||manuallyPaused||!verification?.required;
-  gate.dataset.phase=verification?.phase||'scanning';
-  gate.querySelector('[data-face-gate-message]').textContent=verification?.phase==='failed'?'얼굴이 일치하지 않습니다 · 1.5초 후 재시도':'Face ID · 얼굴을 확인하고 있습니다';
-  root.querySelector('[data-camera-status]').textContent = message;
+  const verification=diagnostics?.verification;
+  const popup = focusPanel && root.querySelector('[data-focus-verification]');
+  const verified = verificationSuccessPending && (tracking || Boolean(popup));
+  const success = popup && paintFocusVerification(popup, verification, verified);
+  const avatarStatus=manuallyPaused&&status==='paused' ? 'manual-paused'
+    : status==='paused'&&verification?.phase==='failed' ? 'identity-failed'
+    : status==='paused'&&(verification?.phase==='returning'||diagnostics?.resumeRemainingMs!=null) ? 'returning'
+    : status==='scanning'&&identityPhase==='checking' ? 'verifying'
+    : status==='paused'&&verification?.phase==='waiting'&&verification.reason==='initial' ? 'verifying'
+    : status==='paused'&&diagnostics&&reason ? 'behavior-warning' : status;
+  const recovery=diagnostics?.returnCountdown ?? {remainingMs:diagnostics?.resumeRemainingMs};
+  paintAvatar(mount, avatarPose, success || tracking, success ? 'tracking' : avatarStatus, performance.now(), recovery, verified);
+  if (verified) verificationSuccessPending=false;
+  const statusLine=root.querySelector('[data-camera-status]');
+  const statusText = success ? '얼굴 인증 완료' : message;
+  if ((!popup || popup.dataset.phase !== 'hidden') && statusLine.textContent !== statusText) statusLine.textContent = statusText;
+  if (popup) {
+    const note = root.querySelector('[data-focus-camera-note]');
+    const noteText = popup.dataset.phase === 'hidden' && ['scanning', 'paused', 'error'].includes(status) ? message : '';
+    if (note.textContent !== noteText) note.textContent = noteText;
+  }
   const toggle = root.querySelector('[data-camera-toggle]');
   toggle?.setAttribute('aria-label', enabled ? '스터디캠 실행 중' : '얼굴 인식으로 학습 시작');
-  root.querySelector('[data-camera-resolution]').textContent = enabled && video.videoWidth ? 'AVATAR · 기기 내 인식' : '';
+  const resolution = root.querySelector('[data-camera-resolution]');
+  if (resolution) resolution.textContent = enabled && video.videoWidth ? '기기 내 분석' : '';
   if (focusPanel) paintCameraDebug(root, diagnostics, cameraState());
 }
 function setStatus(next, text, active = false) {
-  if(enabled&&identityPhase==='enrolling'&&!manuallyPaused&&['paused','scanning'].includes(next)){
-    next='scanning';text='얼굴 등록 중…';active=false;
+  if(enabled&&!enrollmentOnly&&studyGuard.blocked&&next!=='off'&&next!=='error'){
+    next='paused';active=false;
+    text=studyGuard.reason==='ratio'?'학습을 시작했을 때의 화면 비율로 돌아와 주세요.':
+      studyGuard.reason==='gap'?'학습 화면 상태를 확인하지 못해 일시정지했습니다.':unranked?'학습 화면을 벗어났습니다. 돌아오면 자세 감지를 재개합니다.':'학습 화면을 벗어났습니다. 돌아오면 얼굴을 다시 확인합니다.';
+  }
+  if(enabled&&identityPhase==='enrolling'&&next==='scanning'){
+    text='얼굴 등록 중…';active=false;
   }
   if (manuallyPaused && next !== 'error' && next !== 'off') {
     next = 'paused'; text = '수동 일시정지 · 재개 버튼을 눌러 주세요'; active = false;
@@ -168,10 +190,12 @@ function setStatus(next, text, active = false) {
   if (changed) window.dispatchEvent(new Event('study:camera-changed'));
 }
 export function stopCamera(text = '얼굴 인식으로 학습 시작', error = false) {
+  studyGuard.stop();
   revision++;
   frameEpoch++;
-  enabled = false; ready = false; inFlight = false; manuallyPaused = false;
-  enrollmentOnly=false;
+  enabled = false; ready = false; modelsPending = false; inFlight = false; manuallyPaused = false;
+  videoPlaying=false;
+  enrollmentOnly=false;unranked=false;
   if(typeof lockFaceSession==='function')lockFaceSession(text);
   lastVideoTime = -1;
   cancelFrameLoop(); clearInterval(watchdog); clearTimeout(loadingDeadline);
@@ -180,18 +204,22 @@ export function stopCamera(text = '얼굴 인식으로 학습 시작', error = f
   video.srcObject = null;
   video.remove(); avatarPose = null;
   fallbackAttempted = false;
-  focusTracker.reset(); diagnostics = null; reason = null;identityStatus=identityPhase=null;
+  focusTracker.reset(); diagnostics = null; reason = null;identityPhase=null;
+  verificationSuccessPending=false;
+  nextInferenceAt=0;lastFrameRequestAt=-Infinity;
   setStatus(error ? 'error' : 'off', text);
 }
 function recognitionError(detail = '') {
+  console.error('Study camera initialization failed:', detail);
+  const message='인식 엔진을 준비하지 못했습니다 · 종료 후 다시 시작해 주세요';
+  if(startupToken===revision){stopCamera(message,true);return;}
   ready = false; inFlight = false;
   worker?.terminate(); worker = null;
   cancelFrameLoop(); clearInterval(watchdog); clearTimeout(loadingDeadline);
   // Preserve the avatar; never start crediting time without successful detection.
   avatarPose = null;
   focusTracker.reset(); diagnostics = null; reason = 'unknown';
-  console.error('Study camera initialization failed:', detail);
-  setStatus('error', '인식 엔진을 준비하지 못했습니다 · 종료 후 다시 시작해 주세요');
+  setStatus('error', message);
 }
 function acceptResult(data) {
   inFlight = false;
@@ -200,7 +228,7 @@ function acceptResult(data) {
   // follows measured cost, rather than available CPU cores or display refresh.
   nextInferenceAt=data.signals?.identity?.enrolled===false?now:now+Math.min(600,Math.max(0,(data.inferenceMs||0)*.5));
   latestFaceResult=data;
-  if(data.signals?.phonePolicy==='tracked' && latestPhoneObservation && latestPhoneObservation.epoch===data.epoch)
+  if(data.signals?.phonePolicy==='tracked' && latestPhoneObservation && latestPhoneObservation.epoch===data.epoch && latestPhoneObservation.scope===data.scope)
     data={...data,signals:{...data.signals,phoneObservation:latestPhoneObservation}};
   applyResult(data,now);
 }
@@ -208,29 +236,51 @@ function acceptPhoneObservation(data) {
   latestPhoneObservation=data.observation;
   latestPhoneSearch=data.search;
   // Phone completion must not release the face request or refresh the face watchdog.
-  if(!latestFaceResult || latestFaceResult.epoch!==data.epoch)return;
-  applyResult({...latestFaceResult,signals:{...latestFaceResult.signals,phoneObservation:data.observation}},performance.now());
+  if(!latestFaceResult || latestFaceResult.epoch!==data.epoch || latestFaceResult.scope!==data.scope)return;
+  applyResult(latestFaceResult,performance.now(),data);
 }
-function applyResult(data,now) {
+function applyResult(data,now,phoneEvent) {
+  const checkedEpoch=frameEpoch;
+  if(!studyGuard.check()||checkedEpoch!==frameEpoch)return;
   if (manuallyPaused || !cameraVisible() || stream?.getVideoTracks()[0]?.muted) return;
   // Worker sends only the three points needed by the avatar, never the full face mesh.
-  const points = data.landmarks;
-  avatarPose = points ? facePose({ 1: points[0], 33: points[1], 263: points[2] }) : null;
   const stale = !Number.isFinite(data.time) || now - data.time > 3000;
-  const decision = focusTracker.update(stale ? null : data.signals, now);
-  if(decision.verification?.required&&decision.verification.resetRequested)worker?.postMessage({type:'face-verification-reset'});
-  identityStatus=decision.identityWarning?'mismatch':null;
+  if(phoneEvent&&stale)return;
+  if(modelsPending&&data.signals?.identity?.enrolled!==false){
+    if(identityPhase==='enrolling'){
+      identityPhase='loading';
+      setStatus('scanning','학습 감지 기능을 준비하는 중…');
+    }
+    return;
+  }
+  if(!phoneEvent){
+    const points = data.landmarks;
+    avatarPose = points ? facePose({ 1: points[0], 33: points[1], 263: points[2] }) : null;
+  }
+  const decision = phoneEvent ? focusTracker.updatePhone(phoneEvent.observation,now) : focusTracker.update(stale ? null : data.signals, now);
+  if(!decision)return;
+  if(!phoneEvent&&decision.verification?.required&&decision.verification.resetRequested)worker?.postMessage({type:'face-verification-reset'});
+  const justVerified=identityPhase!=='verified'&&decision.verification?.phase==='verified';
   if(data.signals?.identity?.enrolled===false)identityPhase='enrolling';
-  else if(!stale&&data.signals?.identity)identityPhase=decision.identityWarning?'warning':!data.signals.identity.matched?'checking':'verified';
-  diagnostics = { ...focusTracker.getDebug(), runtime: { backend: data.backend, mode: data.mode, inferenceMs: data.inferenceMs, modelMs:data.modelMs, objectAgeMs:data.objectAgeMs,phoneSearch:latestPhoneSearch } };
-  if(decision.verification?.required&&data.signals?.identity?.enrolled!==false)identityPhase=decision.verification.phase==='failed'?'failed':'checking';
+  else if(decision.verification?.required&&data.signals?.identity)identityPhase=decision.verification.phase==='scanning'?'checking':decision.verification.phase;
+  else if(decision.verification?.phase==='verified')identityPhase='verified';
+  if(justVerified)verificationSuccessPending=true;
+  else if(identityPhase!=='verified')verificationSuccessPending=false;
+  diagnostics = { ...focusTracker.getDebug(), observedAt:now, runtime: { backend: data.backend, mode: data.mode, inferenceMs: data.inferenceMs, queueMs:data.queueMs, modelMs:data.modelMs, objectAgeMs:data.objectAgeMs,phoneSearch:latestPhoneSearch } };
   reason = decision.reason;
   setStatus(decision.status, decision.message, decision.tracking);
+  if(justVerified&&typeof handleFaceWorkerEvent==='function')handleFaceWorkerEvent({type:'face-verified'});
 }
-function startRecognitionWorker(token, light = false) {
+function startRecognitionWorker(token, light = false, prepare = false) {
   latestFaceResult=latestPhoneObservation=latestPhoneSearch=null;
-  const target = new Worker(new URL('./camera-worker.js?v=20261105-angle1', import.meta.url));
+  modelsPending=true;
+  const target = worker ?? new Worker(new URL('./camera-worker.js?v=20261109-pitch1', import.meta.url));
   worker = target;
+  if(prepare){
+    target.onerror=error=>{error.preventDefault();if(worker===target){target.terminate();worker=null;}};
+    target.postMessage({type:'prepare',light,phoneRedesign});
+    return;
+  }
   target.onerror = error => { error.preventDefault(); if (worker === target) recoverRecognition(token, error.message); };
   target.onmessage = ({ data }) => {
     if (token !== revision || worker !== target) {data.bitmap?.close?.();return;}
@@ -238,9 +288,17 @@ function startRecognitionWorker(token, light = false) {
     if(data.type==='face-rpc'){
       void handleFaceWorkerRPC(data.action,data.data).then(result=>{if(worker===target&&token===revision)target.postMessage({type:'face-rpc-result',id:data.id,result});}).catch(error=>{if(worker===target&&token===revision)target.postMessage({type:'face-rpc-result',id:data.id,error:error.message||'얼굴 보안 요청에 실패했습니다.'});});return;
     }
-    if(data.type.startsWith('face-')){handleFaceWorkerEvent(data);return;}
+    if(data.type.startsWith('face-')){
+      // Authorize startup only after the controller accepts a fresh match.
+      if(data.type!=='face-verified')handleFaceWorkerEvent(data);
+      return;
+    }
     if (data.type === 'error') { if(typeof handleFaceWorkerEvent==='function')handleFaceWorkerEvent({type:'face-progress',state:'RECOVERY_REQUIRED',label:data.message||'얼굴 확인에 실패했습니다. 취소 후 다시 시도해 주세요.'});recoverRecognition(token, `${data.stage}: ${data.message}`); return; }
-    if (data.type === 'ready') { ready = true; clearTimeout(loadingDeadline); lastResult = performance.now(); }
+    if (data.type === 'ready') {
+      ready = true; lastResult = performance.now();
+      if(videoPlaying){cancelFrameLoop();void frame(token);}
+    }
+    if (data.type === 'models-ready') { modelsPending=false; clearTimeout(loadingDeadline); }
     if (data.type === 'result') acceptResult(data);
     if (data.type === 'phone-observation') {
       acceptPhoneObservation(data);
@@ -248,7 +306,7 @@ function startRecognitionWorker(token, light = false) {
     }
   };
   loadingDeadline = setTimeout(() => { if (worker === target) recoverRecognition(token, 'Worker initialization timed out'); }, 60000);
-  target.postMessage({ type: 'init', light, phoneRedesign, identityKey:`${cameraController}:${token}`,faceSecurity:typeof faceWorkerContext==='function'?faceWorkerContext():null });
+  target.postMessage({ type: 'init', light, phoneRedesign, identityKey:`${cameraController}:${token}`,poseOnly:unranked,faceSecurity:!unranked&&typeof faceWorkerContext==='function'?faceWorkerContext():null });
 }
 function recoverRecognition(token, detail) {
   if (token !== revision || !enabled) return;
@@ -261,7 +319,8 @@ function recoverRecognition(token, detail) {
   focusTracker.reset(true); diagnostics = null; reason = 'unknown';
   worker?.terminate(); worker = null; clearTimeout(loadingDeadline);
   console.warn('Study camera worker fallback:', detail);
-  setStatus('scanning', '경량 Worker로 행동 인식을 준비하는 중…');
+  if(identityPhase!=='enrolling')identityPhase='loading';
+  setStatus('scanning', '인식 기능을 다시 준비하는 중…');
   try {
     startRecognitionWorker(token, true);
   } catch (error) { if (token === revision) recognitionError(error.message); }
@@ -272,6 +331,7 @@ function cancelFrameLoop(){
   videoFrameHandle=null;
 }
 async function frame(token, epoch = frameEpoch) {
+  if(!studyGuard.check())return;
   if (!enabled || token !== revision || epoch !== frameEpoch) return;
   const interval=identityPhase==='enrolling'?CAMERA_ENROLLMENT_INTERVAL_MS:CAMERA_INFERENCE_INTERVAL_MS;
   const followVideo=identityPhase==='enrolling'&&typeof video.requestVideoFrameCallback==='function';
@@ -285,8 +345,11 @@ async function frame(token, epoch = frameEpoch) {
       const bitmap = await createImageBitmap(video);
       if (token !== revision || epoch !== frameEpoch) { bitmap.close(); return; }
       if (worker !== target || !ready) { bitmap.close(); inFlight = false; }
-      else target.postMessage({ type: 'frame', bitmap, time: capturedAt, epoch }, [bitmap]);
-    } catch (error) { inFlight = false; void recoverRecognition(token, error.message); }
+      else target.postMessage({ type: 'frame', bitmap, time: capturedAt, epoch, clockOrigin:performance.timeOrigin }, [bitmap]);
+    } catch (error) {
+      if (token !== revision || epoch !== frameEpoch) return;
+      inFlight = false; void recoverRecognition(token, error.message);
+    }
   }
   if (!enabled || token !== revision || epoch !== frameEpoch) return;
   // Follow actual camera delivery during enrollment rather than polling on a
@@ -308,12 +371,17 @@ function startCameraWatchdog(token) {
     }
   }, 1000);
 }
-function resumeCameraRecognition() {
-  if (!enabled || document.hidden || !stream) return;
+function resumeCameraRecognition(manual = false) {
+  if (!enabled || !manual && (!cameraVisible() || !videoPlaying)) return;
   const token = revision;
   frameEpoch++; cancelFrameLoop(); inFlight = false; lastVideoTime = -1; lastResult = performance.now();
-  focusTracker.reset(true); diagnostics = null;
-  setStatus('scanning', '얼굴을 다시 확인하는 중…');
+  latestFaceResult=latestPhoneObservation=latestPhoneSearch=null;
+  focusTracker.reset(true); diagnostics = null; verificationSuccessPending=false;
+  const checking = manual && !unranked && ready && !modelsPending && identityPhase!=='enrolling';
+  if(identityPhase!=='enrolling')identityPhase=checking?'checking':'loading';
+  if(checking)worker?.postMessage({type:'face-verification-reset'});
+  setStatus('scanning', checking ? '얼굴인식 중 · 카메라를 바라봐 주세요' : '카메라 인식을 다시 준비하는 중…');
+  if (!cameraVisible() || !videoPlaying) return;
   if (!worker) {
     fallbackAttempted = true;
     try { startRecognitionWorker(token, true); } catch (error) { recognitionError(error.message); return; }
@@ -323,21 +391,37 @@ function resumeCameraRecognition() {
   startCameraWatchdog(token);
   void frame(token);
 }
-export async function startCamera({replace=false,registrationOnly=false}={}) {
+export async function startCamera({replace=false,registrationOnly=false,allowUnranked=false,onAccountReady}={}) {
   if (enabled) return false;
   const token = ++revision;
-  identityPhase='loading';identityStatus=null;enrollmentOnly=registrationOnly;
+  startupToken=token;
+  identityPhase='loading';enrollmentOnly=registrationOnly;
   enabled = true;
-  setStatus('opening', '카메라 권한을 확인하는 중…');
+  setStatus('opening', '계정과 카메라를 준비하는 중…');
   try {
-    const face=await prepareFaceSession({replace});
+    const warmCamera=()=>{
+      if(token!==revision)return;
+      if(!registrationOnly)studyGuard.start();
+      // The worker receives the secure face context after account preparation.
+      try { startRecognitionWorker(token,false,true); }
+      catch { worker?.terminate();worker=null; }
+    };
+    if(!allowUnranked)warmCamera();
+    const face=await prepareFaceSession({replace,allowUnranked,onCameraSelected:allowUnranked?warmCamera:undefined});
     if(token!==revision)return false;
+    if(face?.choice==='exit'){stopCamera();return false;}
+    unranked=face?.choice==='unranked';
+    if(unranked)studyGuard.start();
     identityPhase=face?.ticket?'enrolling':'loading';
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('unsupported');
+    onAccountReady?.();
+    try { startRecognitionWorker(token); }
+    catch (error) { recoverRecognition(token, error.message); }
+    if(token!==revision)return false;
     const incoming = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 720 }, frameRate: { ideal: 10, max: 15 } } });
     if (token !== revision) { incoming.getTracks().forEach(track => track.stop()); return false; }
     stream = incoming; video.srcObject = stream;
-    attachFacePreview(stream);
+    if(!unranked)attachFacePreview(stream);
     document.body.append(video);
     for (const track of stream.getVideoTracks()) {
       track.addEventListener('ended', () => { if (token === revision) stopCamera('카메라 연결이 끊겼습니다. 다시 켜 주세요.', true); });
@@ -346,23 +430,31 @@ export async function startCamera({replace=false,registrationOnly=false}={}) {
     }
     await video.play();
     if (token !== revision) return false;
-    setStatus('scanning', '카메라 연결됨 · AI 행동 인식 준비 중…');
-    try { startRecognitionWorker(token); }
-    catch (error) {
-      // Never move expensive inference onto the UI thread, even in compatibility mode.
-      void recoverRecognition(token, error.message);
+    videoPlaying=true;
+    setStatus('scanning', '카메라 연결 완료 · 인식 기능 준비 중…');
+    if(!worker&&cameraVisible())resumeCameraRecognition();
+    else {
+      lastResult=performance.now();
+      startCameraWatchdog(token);
+      if(ready)void frame(token);
     }
-    startCameraWatchdog(token);
-    void frame(token);
+    if(unranked)return true;
     const prepared=await waitForFaceSessionReady();
     if(!prepared||token!==revision)return false;
     if(!registrationOnly&&!await waitForFaceVerification())return false;
     return token===revision;
   } catch (error) {
     if (token !== revision) return false;
+    if (isNetworkFailure(error)) {
+      stopCamera(registrationOnly ? CONNECTION_MESSAGE : '카메라 준비를 완료하지 못했습니다.', true);
+      if (!registrationOnly) showToast(CONNECTION_MESSAGE);
+      return false;
+    }
     const messages = { NotAllowedError: '카메라 권한을 허용한 뒤 다시 켜 주세요.', NotFoundError: '연결된 웹캠을 찾지 못했습니다.', NotReadableError: '다른 앱의 카메라 사용을 종료하고 다시 켜 주세요.' };
-    stopCamera(messages[error.name] || readableNetworkError(error)?.message || '카메라를 켜지 못했습니다. HTTPS와 브라우저 권한을 확인해 주세요.', true);
+    stopCamera(messages[error.name] || error.message || '카메라를 켜지 못했습니다. HTTPS와 브라우저 권한을 확인해 주세요.', true);
     return false;
+  } finally {
+    if(startupToken===token)startupToken=null;
   }
 }
 document.addEventListener('visibilitychange', () => {
@@ -372,8 +464,8 @@ document.addEventListener('visibilitychange', () => {
   if (stream) { cancelFrameLoop(); inFlight = false; }
   lastVideoTime = -1;
   focusTracker.reset(true); diagnostics = null;
-  setStatus(document.hidden ? 'paused' : 'scanning', document.hidden ? '화면을 벗어났습니다 · 일시정지' : '얼굴을 다시 확인하는 중…');
-  if (!document.hidden) resumeCameraRecognition();
+  if(document.hidden)setStatus('paused','화면을 벗어났습니다 · 일시정지');
+  else resumeCameraRecognition();
 });
 window.addEventListener('pageshow', event => { if (event.persisted) resumeCameraRecognition(); });
 window.addEventListener('study:face-locked',event=>{if(enabled)stopCamera(event.detail?.reason||'계정과 얼굴을 다시 확인해 주세요.',true);});
@@ -396,12 +488,15 @@ window.addEventListener('study:navigated', () => {
 });
 document.addEventListener('keydown', event => {
   if (!focusPanel) return;
-  if(focusPanel.querySelector('[data-camera-debug-dialog][open]'))return;
+  if(document.querySelector('.face-enrollment[open]')||focusPanel.querySelector('[data-camera-debug-dialog][open]'))return;
   if (event.key === 'Tab') {
-    const buttons = [...focusPanel.querySelectorAll('button:not(:disabled)')];
-    const index = buttons.indexOf(document.activeElement);
+    const controls = [...focusPanel.querySelectorAll('button:not(:disabled), summary')]
+      .filter(element => element.getClientRects().length);
+    const index = controls.indexOf(document.activeElement);
     event.preventDefault();
-    buttons[(index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length]?.focus();
+    const step = event.shiftKey ? -1 : 1;
+    const next = (index < 0 ? event.shiftKey ? controls.length - 1 : 0 : (index + step + controls.length) % controls.length);
+    controls[next]?.focus();
   }
   if (event.key === 'Escape') focusPanel.querySelector('.cam-end').click();
 });

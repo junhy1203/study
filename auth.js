@@ -1,4 +1,5 @@
 import { firebaseConfig } from './firebase-config.js';
+import { showToast } from './notifications.js?v=20261109-capsule1';
 
 let currentUser = null;
 let services;
@@ -8,16 +9,13 @@ let resolved = false;
 export function getAuthUser() { return currentUser; }
 
 // A token refresh alone must never satisfy daily reauthentication.
-export async function reauthenticateFaceAccount({password='',getTotpCode}={}) {
+export async function reauthenticateFaceAccount({getTotpCode}={}) {
   const sdk=await authReady,user=getAuthUser();
   if(!sdk||!user)throw new Error('계정으로 로그인해 주세요.');
   const uid=user.uid;
   try {
-    if(user.providerData.some(row=>row.providerId==='password'))await sdk.reauthenticateWithCredential(user,sdk.EmailAuthProvider.credential(user.email,password));
-    else if(user.providerData.some(row=>row.providerId==='google.com')){
-      const provider=new sdk.GoogleAuthProvider();provider.setCustomParameters({prompt:'select_account'});
-      await sdk.reauthenticateWithPopup(user,provider);
-    }else throw new Error('이 계정의 로그인 제공자는 얼굴 등록을 지원하지 않습니다.');
+    const provider=new sdk.GoogleAuthProvider();provider.setCustomParameters({prompt:'select_account'});
+    await sdk.reauthenticateWithPopup(user,provider);
   }catch(error){
     if(error.code!=='auth/multi-factor-auth-required')throw new Error(friendlyError(error));
     const resolver=sdk.getMultiFactorResolver(sdk.auth,error),hint=resolver.hints.find(row=>row.factorId===sdk.TotpMultiFactorGenerator.FACTOR_ID);
@@ -30,11 +28,7 @@ export async function reauthenticateFaceAccount({password='',getTotpCode}={}) {
 }
 
 function message(text, error = false) {
-  const status = document.querySelector('[data-auth-status]');
-  if (!status) return;
-  status.textContent = text;
-  status.classList.toggle('is-error', error);
-  status.hidden = !text;
+  if (text) showToast(text);
 }
 
 function paintAccount() {

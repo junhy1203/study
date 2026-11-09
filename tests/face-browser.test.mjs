@@ -32,7 +32,7 @@ test('Chromium stores cloned CryptoKeys, seals in a Worker, survives process res
       actionCounts.set(action,(actionCounts.get(action)||0)+1);
       if(action==='sealFaceKeyEnvelope'&&delaySeal){delaySeal=false;await new Promise(resolve=>{releaseSeal=resolve;onSeal?.();});}
       if(action==='commitFaceEnrollment'&&failCommitOnce){failCommitOnce=false;throw Error('일시적 서버 저장 실패 테스트');}
-      const result=await service(action,{auth:{uid,token:{email_verified:true,auth_time:authTime,firebase:{sign_in_provider:'password'}}},data});
+      const result=await service(action,{auth:{uid,token:{email_verified:true,auth_time:authTime,firebase:{sign_in_provider:'google.com'}}},data});
       if(action==='cancelFaceEnrollment')onCancel?.();return result;
     });
     await context.exposeFunction('faceReauth',()=>{authTime=Math.floor(Date.now()/1000);authCount++;});
@@ -41,7 +41,7 @@ test('Chromium stores cloned CryptoKeys, seals in a Worker, survives process res
       let body,type='text/javascript';
       if(url.pathname==='/'){
         type='text/html';body='<html lang="ko"><head><meta charset="utf-8"></head><body><button id="start">얼굴 확인 시작</button><script type="module">import * as api from "/face-session.js";window.api=api;window.testUid="owner";document.querySelector("#start").onclick=()=>{window.finished=false;window.pending=api.prepareFaceSession().then(()=>{window.finished=true;}).catch(error=>{window.error=error.message;});};window.loaded=true;</script></body></html>';
-      }else if(url.pathname==='/auth.js')body='export const authReady=Promise.resolve(true);export const getAuthUser=()=>({uid:window.testUid,email:"test@example.invalid",providerData:[{providerId:"password"}]});export async function reauthenticateFaceAccount(){await window.faceReauth();}';
+      }else if(url.pathname==='/auth.js')body='export const authReady=Promise.resolve(true);export const getAuthUser=()=>({uid:window.testUid,email:"test@example.invalid",providerData:[{providerId:"google.com"},{providerId:"password"}]});export async function reauthenticateFaceAccount(options){if("password" in options)throw Error("Password must not be requested");await window.faceReauth();}';
       // Model a browser retaining the pre-lighting modules at their old URLs.
       else if(url.pathname==='/functions/face-protocol.js'&&!url.search)body=(await readFile(resolve(root,'functions/face-protocol.js'),'utf8')).replace("'rgb224-light-estimated-mesh-scan-v1'","'eyes-aligned-rgb224-periocular-v2'").replace('FACE_SCHEMA = 5','FACE_SCHEMA = 3');
       else if(url.pathname==='/face-crypto.js'&&!url.search)body=(await readFile(resolve(root,'face-crypto.js'),'utf8')).replace(/\.\/functions\/face-protocol.js\?v=[^']+/, './functions/face-protocol.js');
@@ -147,7 +147,43 @@ test('Chromium stores cloned CryptoKeys, seals in a Worker, survives process res
       try{stale.validateFaceBinding({uid:'owner',installationId:'browser',purpose:'face-profile',modelVersion:current.FACE_MODEL,preprocessVersion:current.FACE_PREPROCESS,schemaVersion:current.FACE_SCHEMA},'owner','browser');return null;}catch(error){return error.message;}
     });
     assert.match(staleError,/얼굴 정보 버전 또는 계정이 다릅니다/,'old cached modules reproduce the reported save failure');
-    await page.click('#start');await page.locator('.face-enrollment input[type=checkbox]').check();await page.locator('input[type=password]').fill('not-a-real-password');await page.getByRole('button',{name:'계정 인증',exact:true}).click();await page.waitForFunction(()=>window.finished);
+    const startChoice=async()=>{
+      await page.evaluate(()=>{window.choice=null;window.finished=false;window.pending=window.api.prepareFaceSession({allowUnranked:true}).then(result=>{window.choice=result.choice;window.finished=true;});});
+      await page.getByRole('heading',{name:'학습 방식 선택'}).waitFor();
+    };
+    for(const [label,choice] of [['랭킹 포기하기','unranked'],['나가기','exit']]){
+      await startChoice();
+      await page.getByRole('button',{name:label,exact:true}).click();
+      await page.waitForFunction(expected=>window.choice===expected,choice);
+      assert.equal(await page.locator('html[data-face-ranking-ready]').count(),0);
+    }
+    assert.equal(actionCounts.get('beginFaceEnrollment')||0,0);
+    await startChoice();
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(()=>window.choice==='exit');
+    await startChoice();
+    await page.getByRole('button',{name:'등록하기',exact:true}).click();
+    await page.locator('.face-privacy-card').waitFor();
+    assert.equal(await page.locator('.face-protector-brand').textContent(),'Fair Protector 2.1');
+    assert.equal(await page.locator('input[type=password]').count(),0,'even accounts with both providers use Google without a password field');
+    assert.match(await page.locator('.face-privacy-card').textContent(),/얼굴 사진, 영상, 특징값 모두 서버로 보내지 않아요/);
+    assert.match(await page.locator('.face-privacy-card').textContent(),/스터디캠을 시작하거나 자리를 비웠다가 돌아오면.*형태 유사도도 85% 이상/);
+    for(const width of [320,390,1440]){
+      await page.setViewportSize({width,height:844});
+      const bounds=await page.locator('.face-enrollment').evaluate(node=>{const r=node.getBoundingClientRect();return {left:r.left,right:r.right,width:innerWidth,overflow:node.scrollWidth>node.clientWidth};});
+      assert.ok(bounds.left>=0&&bounds.right<=bounds.width,JSON.stringify(bounds));assert.equal(bounds.overflow,false);
+      await page.locator('.face-enrollment').evaluate(node=>node.scrollTop=0);
+      if(width!==320)await page.screenshot({path:resolve(root,`.codex-face-privacy-${width}.png`)});
+    }
+    await page.setViewportSize({width:390,height:844});
+    await page.getByRole('button',{name:'Google로 로그인',exact:true}).click();assert.equal(authCount,0,'consent is required before account authentication');
+    await page.locator('.face-privacy-details summary').click();
+    assert.equal(await page.locator('.face-privacy-details').getAttribute('open'),'');
+    assert.match(await page.locator('.face-privacy-details').textContent(),/서버는 계정 인증, 등록 상태와 암호화 키 보호 정보를 처리/);
+    await page.locator('.face-privacy-details summary').click();
+    await page.locator('.face-enrollment input[type=checkbox]').check();await page.getByRole('button',{name:'Google로 로그인',exact:true}).click();await page.waitForFunction(()=>window.finished);
+    assert.equal(await page.locator('.face-privacy-card').count(),0,'consent guidance clears when scanning starts');
+    assert.equal(await page.locator('.face-privacy-footer').count(),1,'privacy assurance remains while scanning');
     await page.evaluate(()=>{window.verificationResult=null;window.verificationWait=window.api.waitForFaceVerification().then(result=>{window.verificationResult=result;});});
     assert.equal(await page.evaluate(()=>window.verificationResult),null);
     // Even when given a live stream, registration never renders a camera or mesh.
@@ -185,16 +221,16 @@ test('Chromium stores cloned CryptoKeys, seals in a Worker, survives process res
     rows.get('faceSecurity/owner').active.binding.schemaVersion=4;
     rows.get('faceSecurity/owner').active.binding.preprocessVersion='full-aligned-rgb224-light-v3';
     await page.evaluate(async()=>{const s=window.api.faceWorkerContext(),{faceStore,faceRecordKey}=await import('/face-storage.js');const key=faceRecordKey(s.uid,s.installationId,s.binding.profileId),record=await faceStore('profiles','readonly',key);record.binding={...record.binding,schemaVersion:4,preprocessVersion:'full-aligned-rgb224-light-v3'};await faceStore('profiles','readwrite',key,record);window.api.lockFaceSession();window.finished=false;});
-    await page.click('#start');await page.locator('.face-enrollment input[type=checkbox]').check();await page.locator('input[type=password]').fill('not-a-real-password');await page.getByRole('button',{name:'계정 인증',exact:true}).click();await page.waitForFunction(()=>window.finished);assert.ok(await page.evaluate(()=>Boolean(window.api.faceWorkerContext().ticket)));
+    await page.click('#start');await page.locator('.face-enrollment input[type=checkbox]').check();await page.getByRole('button',{name:'Google로 로그인',exact:true}).click();await page.waitForFunction(()=>window.finished);assert.ok(await page.evaluate(()=>Boolean(window.api.faceWorkerContext().ticket)));
     await runVault(page);original=await page.evaluate(()=>({id:window.api.faceWorkerContext().binding.profileId,ciphertext:window.api.faceWorkerContext().record.ciphertext}));
     assert.equal(rows.get('faceSecurity/owner').active.binding.schemaVersion,5);
     const replace=async()=>{
       await page.evaluate(()=>{window.api.lockFaceSession();window.finished=false;window.error=null;window.pending=window.api.prepareFaceSession({replace:true}).then(()=>{window.finished=true;}).catch(error=>{window.error=error.message;});});
       await page.locator('.face-warning').waitFor();
-      assert.equal(await page.locator('#face-enrollment-title').textContent(),'얼굴 등록');
-      assert.match(await page.locator('.face-steps').textContent(),/정면 확인 → 고개 움직이기/);
+      assert.equal(await page.locator('#face-enrollment-title').textContent(),'안심하고 얼굴 등록');
+      assert.deepEqual(await page.locator('.face-steps li').allTextContents(),['1계정 확인','2얼굴 등록','3학습 시작']);
       assert.match(await page.locator('.face-warning').textContent(),/새 등록을 취소하면 기존 등록은 유지/);
-      await page.locator('.face-enrollment input[type=checkbox]').check();await page.locator('input[type=password]').fill('not-a-real-password');await page.getByRole('button',{name:'계정 인증',exact:true}).click();await page.waitForFunction(()=>window.finished);
+      await page.locator('.face-enrollment input[type=checkbox]').check();await page.getByRole('button',{name:'Google로 로그인',exact:true}).click();await page.waitForFunction(()=>window.finished);
       assert.equal(await page.evaluate(()=>window.api.faceWorkerContext().record),null);
       assert.equal(rows.get('faceSecurity/owner').active.profileId,original.id);
     };
@@ -210,11 +246,13 @@ test('Chromium stores cloned CryptoKeys, seals in a Worker, survives process res
     const box=await page.locator('.face-enrollment').boundingBox();assert.ok(box.width<=390&&box.height<=844);
     await page.screenshot({path:resolve(root,'.codex-face-enrollment-mobile.png')});
     await page.getByRole('button',{name:'취소',exact:true}).click();await page.waitForFunction(()=>window.error);assert.equal(await page.locator('.face-enrollment').count(),0);assert.equal(rows.get('faceSecurity/owner').active.profileId,replacedId);
-    await page.click('#start');await page.locator('.face-enrollment input[type=checkbox]').check();await page.locator('input[type=password]').fill('not-a-real-password');await page.getByRole('button',{name:'계정 인증',exact:true}).click();await page.waitForFunction(()=>window.finished);
+    await page.click('#start');await page.locator('.face-enrollment input[type=checkbox]').check();await page.getByRole('button',{name:'Google로 로그인',exact:true}).click();await page.waitForFunction(()=>window.finished);
     await page.evaluate(()=>{window.verificationResult=null;window.verificationWait=window.api.waitForFaceVerification().then(result=>{window.verificationResult=result;});window.failStorage=true;});await runVault(page,true);assert.equal(rows.get('faceSecurity/other').active,undefined);assert.equal(await page.evaluate(()=>window.api.faceSessionState().verified),false);
     await page.evaluate(()=>window.api.handleFaceWorkerEvent({type:'face-progress',state:'RECOVERY_REQUIRED',label:'저장 실패. 다시 시도해 주세요.'}));assert.equal(await page.getByRole('button',{name:'취소',exact:true}).isVisible(),false);await page.evaluate(()=>window.api.lockFaceSession('test teardown'));
     assert.equal(await page.evaluate(()=>window.verificationResult),false);
-    await page.evaluate(()=>{window.testUid='owner';window.pendingDelete=window.api.deleteFaceEnrollment();});await page.locator('.face-enrollment input[type=checkbox]').check();await page.locator('input[type=password]').fill('not-a-real-password');await page.getByRole('button',{name:'계정 인증',exact:true}).click();await page.evaluate(()=>window.pendingDelete);assert.equal(rows.get('faceSecurity/owner').active.revoked,true);
+    const beforeDeleteAuth=authCount;authTime-=86400;
+    await page.evaluate(()=>{window.testUid='owner';window.pendingDelete=window.api.deleteFaceEnrollment();});await page.getByRole('heading',{name:'얼굴 등록 삭제'}).waitFor();await page.getByRole('button',{name:'취소',exact:true}).click();await page.evaluate(()=>window.pendingDelete);assert.equal(rows.get('faceSecurity/owner').active.revoked,false);
+    await page.evaluate(()=>{window.pendingDelete=window.api.deleteFaceEnrollment();});await page.getByRole('button',{name:'얼굴 등록 삭제',exact:true}).click();await page.evaluate(()=>window.pendingDelete);assert.equal(authCount,beforeDeleteAuth);assert.equal(rows.get('faceSecurity/owner').active.revoked,true);
     const erased=await page.evaluate(async()=>{const {faceStore}=await import('/face-storage.js');const installation=await faceStore('settings','readonly','installation');return await faceStore('keys','readonly',`owner:${installation}`);});assert.equal(erased,undefined);assert.deepEqual(failures,[]);
   }finally{await context?.close();}
 });

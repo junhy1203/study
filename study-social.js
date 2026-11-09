@@ -1,12 +1,12 @@
 import {authReady,getAuthUser} from './auth.js?v=20261104-1';
-import {getStudyData} from './data.js?v=20261105-shop10';
+import {getStudyData,setLoading} from './data.js?v=20261107-face-meals1';
 import {studyCall,serviceError,element as el,duration} from './study-api.js?v=20261024-selfhost1';
-import {showToast} from './notifications.js?v=20261022-18';
+import {showToast} from './notifications.js?v=20261109-capsule1';
 import {roomClock,memberTime,memberStatus} from './room-time.js?v=20261023-16';
 import {openSocialPanel} from './social-dialog.js?v=20261023-8';
-import {renderFriendCard} from './friend-card.js?v=20261105-shop10';
+import {renderFriendCard} from './friend-card.js?v=20261107-impact1';
 import {expandProfile,collapseProfile,reduceProfileMotion} from './profile-motion.js?v=20261105-shop10';
-import {avatarBackground as avatarCardBackground} from './avatar-renderer.js?v=20261105-shop10';
+import {avatarBackground as avatarCardBackground} from './avatar-renderer.js?v=20261107-impact1';
 let state={friends:[],friendRequests:[],sentRequests:[],roomInvites:[],room:null,code:null};
 let revision=-1,owner=null,requesting=false,busy=false,lastPoll=0,epoch=0,lastError='';
 let friendsLoaded=false;
@@ -32,7 +32,8 @@ function pair(title,description,actions=[]) {
 function list(selector,rows,fallback,render) {
   if(selector==='[data-friend-list]'){
     for(const root of document.querySelectorAll(selector)){
-      if(!friendsLoaded){if(root.dataset.friendListSignature!=='loading'){const placeholder=el('div','friend-list-placeholder','친구 목록을 불러오는 중…');placeholder.setAttribute('role','status');root.replaceChildren(placeholder);root.dataset.friendListSignature='loading';}continue;}
+      setLoading(root,!friendsLoaded&&!lastError);
+      if(!friendsLoaded){const text=lastError?'친구 목록을 불러오지 못했습니다.':'친구 목록을 불러오는 중…';if(root.textContent!==text)root.textContent=text;root.dataset.friendListSignature='loading';continue;}
       const invite=state.room&&(state.room.visibility||(state.room.type==='school'?'public':'private'))==='private'?state.room.memberIds:null,signature=JSON.stringify([rows,invite]);if(root.dataset.friendListSignature===signature)continue;root.dataset.friendListSignature=signature;
       const old=new Map([...root.children].filter(node=>node.dataset.friendUid).map(node=>[node.dataset.friendUid,node]));
       const ids=new Set(rows.map(row=>row.uid)),removing=[];for(const node of [...root.childNodes])if(node.nodeType!==1||!ids.has(node.dataset.friendUid)){if(node.nodeType===1&&node.dataset.friendUid)removing.push(removeFriendCard(node));else node.remove();}
@@ -40,7 +41,11 @@ function list(selector,rows,fallback,render) {
       rows.forEach((friend,index)=>{const prior=old.get(friend.uid),row=friendRow(friend,prior),current=[...root.children].filter(node=>!node.dataset.friendRemoving)[index];if(current!==row)root.insertBefore(row,current||null);if(!prior&&!matchMedia('(prefers-reduced-motion: reduce)').matches)row.animate([{opacity:0,transform:'translateY(12px)'},{opacity:1,transform:'translateY(0)'}],{duration:280,delay:Math.min(index*45,225),fill:'backwards',easing:'ease-out'});});
     }return;
   }
-  for(const root of document.querySelectorAll(selector))root.replaceChildren(...(rows.length?rows.map(render):[empty(fallback)]));
+  for(const root of document.querySelectorAll(selector)){
+    const loading=root.dataset?.skeleton&&!rows.length&&!lastError&&(selector==='[data-room-directory]'?!state.schoolRooms:!friendsLoaded);
+    setLoading(root,Boolean(loading));
+    root.replaceChildren(...(rows.length?rows.map(render):[empty(loading?'로딩 중…':fallback)]));
+  }
 }
 function friendRow(friend,existing){
   const row=existing||el('div','social-person friend-list-row'),profile=existing?.querySelector('.friend-inline')||button('','profile',friend.uid);row.dataset.friendUid=friend.uid;profile.className='friend-inline';profile.setAttribute('aria-label',`${friend.displayName} 프로필`);
@@ -121,7 +126,10 @@ function paintSchoolEntry() {
   const {ready,profile}=getStudyData(),school=profile?.school,user=getAuthUser();
   for(const node of document.querySelectorAll('[data-room-current]'))node.hidden=!state.room;
   for(const node of document.querySelectorAll('[data-room-browse]'))node.hidden=Boolean(state.room);
-  for(const label of document.querySelectorAll('[data-school-room-label]'))label.textContent=!ready?'계정 정보를 불러오는 중…':school?`${school.name} ${school.grade}학년 기본방 · 공개·비공개방`:'함께 공부할 방을 만들거나 초대받아 입장하세요';
+  for(const label of document.querySelectorAll('[data-school-room-label]')){
+    setLoading(label,!ready);
+    label.textContent=!ready?'계정 정보를 불러오는 중…':school?`${school.name} ${school.grade}학년 기본방 · 공개·비공개방`:'함께 공부할 방을 만들거나 초대받아 입장하세요';
+  }
   list('[data-room-directory]',state.schoolRooms||[],state.schoolRooms?'입장 가능한 방이 없어요. 학교를 등록하거나 새 방을 만들어 보세요.':'방 목록을 불러오는 중…',row=>previewCard(row));
   for(const root of document.querySelectorAll('[data-room-code-preview]'))root.replaceChildren(...(state.codePreview?[previewCard(state.codePreview.preview,'joinCode')]:[]));
   for(const form of document.querySelectorAll('[data-social-form="createRoom"]')) {
@@ -289,7 +297,7 @@ window.addEventListener('study:room-activity',event=>{
 });
 window.addEventListener('study:auth-changed',()=>{
   if(owner!==getAuthUser()?.uid)friendsLoaded=false;
-  const uid=getAuthUser()?.uid||null;if(uid===owner)return;owner=uid;epoch++;revision=-1;lastPoll=0;lastError='';roomClockAnchor=null;refreshQueue.clear();refreshing.clear();for(const dialog of document.querySelectorAll('[data-social-panel][open]'))dialog.close();expandedRooms.clear();state={friends:[],friendRequests:[],sentRequests:[],roomInvites:[],room:null,code:null};paint();void poll(true);
+  const uid=getAuthUser()?.uid||null;if(uid===owner)return;owner=uid;epoch++;revision=-1;lastPoll=0;lastError='';friendsLoaded=false;roomClockAnchor=null;refreshQueue.clear();refreshing.clear();for(const dialog of document.querySelectorAll('[data-social-panel][open]'))dialog.close();expandedRooms.clear();state={friends:[],friendRequests:[],sentRequests:[],roomInvites:[],room:null,code:null};paint();void poll(true);
 });
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)void poll(true);});
 setInterval(()=>{paintDock();void poll();},5000);

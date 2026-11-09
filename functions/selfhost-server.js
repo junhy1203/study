@@ -56,6 +56,16 @@ export async function authorizeRead(db,uid,input) {
   return query;
 }
 function record(snapshot) {return {id:snapshot.id,exists:snapshot.exists,data:snapshot.data()??null};}
+async function readRecord(db,uid,input) {
+  const ref=await authorizeRead(db,uid,input),snapshot=await ref.get();
+  return input.kind==='doc'?record(snapshot):{docs:snapshot.docs.map(record)};
+}
+async function streamRead(db,uid,res,input,index,type) {
+  let result;
+  try{result={value:await readRecord(db,uid,input)};}
+  catch(cause){result={error:publicError(cause)};}
+  if(!res.destroyed&&!res.writableEnded)res.write(serialized(type?{type,index,...result}:{index,...result})+'\n');
+}
 
 export function createApi({db,verifyToken,allowedOrigins,callables=handlers,log=()=>{}}) {
   const instanceId=randomUUID();
@@ -93,8 +103,7 @@ export function createApi({db,verifyToken,allowedOrigins,callables=handlers,log=
       if(!rate||now-rate.start>=60000)rates.set(rateKey,{start:now,count:1});
       else if(++rate.count>300)fail('resource-exhausted','요청이 많습니다. 잠시 후 다시 시도해 주세요.');
       if(req.method==='POST'&&url.pathname==='/api/v1/read') {
-        const input=await body(req),ref=await authorizeRead(db,token.uid,input),snapshot=await ref.get();
-        send(res,200,input.kind==='doc'?record(snapshot):{docs:snapshot.docs.map(record)});return;
+        send(res,200,await readRecord(db,token.uid,await body(req)));return;
       }
       if(req.method==='POST'&&url.pathname==='/api/v1/read-batch'){
         const input=await body(req),reads=input?.reads;
@@ -102,14 +111,7 @@ export function createApi({db,verifyToken,allowedOrigins,callables=handlers,log=
         const currentRate=rates.get(rateKey);currentRate.count+=reads.length-1;
         if(currentRate.count>300)fail('resource-exhausted','요청이 많습니다. 잠시 후 다시 시도해 주세요.');
         res.writeHead(200,{'Content-Type':'application/x-ndjson; charset=utf-8','X-Accel-Buffering':'no'});res.flushHeaders();
-        await Promise.all(reads.map(async(item,index)=>{
-          let result;
-          try{
-            const ref=await authorizeRead(db,token.uid,item),snapshot=await ref.get();
-            result={value:item.kind==='doc'?record(snapshot):{docs:snapshot.docs.map(record)}};
-          }catch(cause){result={error:publicError(cause)};}
-          if(!res.destroyed&&!res.writableEnded)res.write(serialized({index,...result})+'\n');
-        }));
+        await Promise.all(reads.map((item,index)=>streamRead(db,token.uid,res,item,index)));
         res.end();return;
       }
       if(req.method==='POST'&&url.pathname==='/api/v1/watch') {
@@ -117,15 +119,31 @@ export function createApi({db,verifyToken,allowedOrigins,callables=handlers,log=
         if(input.kind!=='doc'||!input.path?.startsWith(`users/${token.uid}`))fail('permission-denied','본인의 상태만 구독할 수 있습니다.');
         const ref=await authorizeRead(db,token.uid,input);
         if(!new RegExp(`^users/[^/]+(?:/sessions/[^/]+)?$`).test(ref.path))fail('permission-denied','이 기록은 구독할 수 없습니다.');
+        const reads=input.initialReads??[];
+        if(!Array.isArray(reads)||reads.length>16||reads.length&&ref.path!==`users/${token.uid}`)fail('invalid-argument','초기 통계 조회가 올바르지 않습니다.');
         const count=subscribers.get(token.uid)||0;
         if(count>=8)fail('resource-exhausted','열린 상태 연결이 너무 많습니다.');
+        const currentRate=rates.get(rateKey);currentRate.count+=reads.length;
+        if(currentRate.count>300)fail('resource-exhausted','요청이 많습니다. 잠시 후 다시 시도해 주세요.');
         subscribers.set(token.uid,count+1);
         res.writeHead(200,{'Content-Type':'application/x-ndjson; charset=utf-8','X-Accel-Buffering':'no'});
         res.flushHeaders();
         let dirty=false,reading=false,closed=false,last;
         const publish=async()=>{
           if(closed)return;dirty=true;if(reading)return;reading=true;
-          try {while(dirty&&!closed){dirty=false;const value=serialized({type:'snapshot',...record(await ref.get())});if(value!==last&&!closed){last=value;res.write(value+'\n');}}}
+          try {
+            while(dirty&&!closed){
+              dirty=false;
+              const snapshot=await ref.get(),data={type:'snapshot',...record(snapshot)};
+              const value=serialized(data);
+              if(value===last||closed)continue;
+              // Read statistics after the profile revision they are paired with.
+              const initial=last===undefined&&snapshot.exists&&reads.length;
+              last=value;
+              res.write((initial?serialized({...data,initialReads:true}):value)+'\n');
+              if(initial)for(const [index,item] of reads.entries())void streamRead(db,token.uid,res,item,index,'read');
+            }
+          }
           catch{if(!closed)res.end();}finally{reading=false;}
         };
         const changed=paths=>{if(paths.has(ref.path))void publish();};

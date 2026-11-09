@@ -1,6 +1,6 @@
-import {createStudyRoom} from './study-room.js?v=20261106-world5';
+import {createStudyRoom} from './study-room.js?v=20261107-impact1';
 import {ROOM_EMOTES} from './functions/study-room.js?v=20261106-world5';
-import {pixelAvatar} from './avatar-renderer.js?v=20261105-shop10';
+import {pixelAvatar} from './avatar-renderer.js?v=20261107-impact1';
 import {serviceError} from './study-api.js?v=20261024-selfhost1';
 
 const node=(tag,className='',text)=>{const n=document.createElement(tag);n.className=className;if(text)n.textContent=text;return n;};

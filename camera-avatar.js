@@ -1,135 +1,7 @@
+import { FACE_SUCCESS_MS, startFaceEffect } from './camera-face-effect.js?v=20261108-recovery2';
+
 const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
 const presentations = new WeakMap();
-const checkVertex = [152, 179];
-const checkLeft = Math.hypot(19, 19), checkRight = Math.hypot(37, 40);
-const checkTurn = checkLeft / (checkLeft + checkRight);
-export const MERGE_DURATION_MS = 1320;
-
-export function checkReach(progress) {
-  const start = 18 / (checkLeft + checkRight);
-  const stops = [[.40, start], [.64, 1.12], [.72, 1.12], [.84, 1.03], [.93, 1], [1, 1]];
-  if (progress <= stops[0][0]) return start;
-  for (let index = 1; index < stops.length; index++) {
-    const [end, value] = stops[index], [begin, previous] = stops[index - 1];
-    if (progress <= end) {
-      const phase = (progress - begin) / (end - begin);
-      return previous + (value - previous) * (1 - (1 - phase) ** 3);
-    }
-  }
-  return 1;
-}
-
-export function checkSegment(index, count = 8, reach = 1) {
-  const visible = clamp(reach, 0, 1.6);
-  const start = index / count * visible, end = (index + 1) / count * visible;
-  const positions = Array.from({ length: 17 }, (_, step) => start + (end - start) * step / 16);
-  if (start < checkTurn && end > checkTurn) positions.push(checkTurn);
-  return positions.sort((a, b) => a - b).map(position => {
-    const progress = position <= checkTurn ? position / checkTurn : (position - checkTurn) / (1 - checkTurn);
-    const from = position <= checkTurn ? [133, 160] : checkVertex;
-    const to = position <= checkTurn ? checkVertex : [189, 139];
-    return from.map((value, axis) => value + (to[axis] - value) * progress);
-  });
-}
-
-function captureFace(mount) {
-  const order = [0, 7, 1, 6, 2, 5, 3, 4];
-  return [...mount.querySelectorAll('.recognition-piece')].map((piece, index) => {
-    const target = checkSegment(order[index]);
-    const original = piece.getAttribute('d');
-    let source = target;
-    try {
-      const length = piece.getTotalLength();
-      const screen = piece.ownerSVGElement.getScreenCTM(), local = piece.getScreenCTM();
-      const matrix = screen && local ? screen.inverse().multiply(local) : null;
-      source = target.map((_, step) => {
-        const point = piece.getPointAtLength(length * step / (target.length - 1));
-        return matrix ? [matrix.a * point.x + matrix.c * point.y + matrix.e, matrix.b * point.x + matrix.d * point.y + matrix.f] : [point.x, point.y];
-      });
-    } catch { /* A hidden/detached SVG can lack a screen matrix; still show its assembled check. */ }
-    const line = source.map((_, step) => {
-      const offset = (order[index] + step / (source.length - 1)) / 8 * 18 / Math.SQRT2;
-      return [133 + offset, 160 + offset];
-    });
-    return { piece, source, line, slot: order[index], original };
-  });
-}
-export function mergePath(source, target, progress) {
-  return target.map(([x, y], index) => {
-    const start = source[index];
-    return `${index ? 'L' : 'M'}${(start[0] + (x - start[0]) * progress).toFixed(3)} ${(start[1] + (y - start[1]) * progress).toFixed(3)}`;
-  }).join('');
-}
-function mergeFace(parts, completed) {
-  const duration = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches ? 1 : MERGE_DURATION_MS;
-  let frameId, deadline, done = false, started;
-  const draw = progress => {
-    for (const { piece, source, line, slot } of parts) {
-      piece.style.transform = 'none';
-      const points = mergeStroke(source, line, slot, progress);
-      piece.setAttribute('d', mergePath(points, points, 1));
-      piece.setAttribute('stroke-width', String(4 + progress * 1.5));
-    }
-  };
-  const finish = () => {
-    if (done) return;
-    done = true; clearTimeout(deadline);
-    if (frameId != null) cancelAnimationFrame(frameId);
-    draw(1); completed();
-  };
-  const tick = now => {
-    if (done) return;
-    started ??= now;
-    const progress = Math.min(1, (now - started) / duration);
-    draw(progress);
-    if (progress >= 1) finish();
-    else frameId = requestAnimationFrame(tick);
-  };
-  draw(0);
-  // Direct SVG attributes work even in browsers that do not animate CSS `d`.
-  if (parts.length) {
-    frameId = requestAnimationFrame(tick);
-    deadline = setTimeout(finish, duration + 250);
-  } else deadline = setTimeout(finish, duration);
-  return () => {
-    done = true; clearTimeout(deadline);
-    if (frameId != null) cancelAnimationFrame(frameId);
-    for (const { piece, original } of parts) {
-      piece.setAttribute('d', original); piece.removeAttribute('stroke-width'); piece.style.removeProperty('transform');
-    }
-  };
-}
-
-export function mergeStroke(source, line, slot, progress) {
-  const ease = value => 1 - (1 - clamp(value, 0, 1)) ** 3;
-  const center = source.reduce((sum, point) => [sum[0] + point[0] / source.length, sum[1] + point[1] / source.length], [0, 0]);
-  const fragment = (phase) => {
-    const travel = ease(phase);
-    const shrink = 1 - .82 * ease(phase * 2);
-    const destination = [90 + slot * 3, 146 + (slot - 3.5) * 3.5];
-    return source.map(([x, y]) => [
-      center[0] + (destination[0] - center[0]) * travel + (x - center[0]) * shrink,
-      center[1] + (destination[1] - center[1]) * travel + (y - center[1]) * shrink - Math.sin(Math.PI * phase) * (8 + slot * 2),
-    ]);
-  };
-  // Shrink each original stroke independently into a small travelling fragment.
-  // The separated fragments sweep left, fold together, then return as the check.
-  if (progress <= .22) {
-    return fragment(clamp((progress - slot * .008) / (.22 - slot * .008), 0, 1));
-  }
-  if (progress < .4) {
-    const phase = (progress - .22) / .18;
-    const fold = phase * phase * (3 - 2 * phase);
-    const pieces = fragment(1);
-    return line.map(([x, y], index) => [
-      pieces[index][0] + (x - 54 - pieces[index][0]) * fold,
-      pieces[index][1] + (y - pieces[index][1]) * fold - Math.sin(Math.PI * phase) * 14,
-    ]);
-  }
-  const returnOffset = -54 * (1 - ease((progress - .4) / .24));
-  return checkSegment(slot, 8, checkReach(progress)).map(([x, y]) => [x + returnOffset, y]);
-}
-
 export function facePose(landmarks) {
   const nose = landmarks?.[1], left = landmarks?.[33], right = landmarks?.[263];
   if (![nose?.x, nose?.y, left?.x, left?.y, right?.x, right?.y].every(Number.isFinite)) return null;
@@ -140,7 +12,7 @@ export function facePose(landmarks) {
   };
 }
 
-export function paintAvatar(mount, pose, active, status = 'tracking', now = performance.now(), recovery = null) {
+export function paintAvatar(mount, pose, active, status = 'tracking', now = performance.now(), recovery = null, verified = false) {
   if (!mount.querySelector('.cam-avatar')) {
     // Static artwork only. Camera pixels and facial landmarks never enter the DOM.
     mount.innerHTML = `<svg class="cam-avatar" viewBox="0 0 320 320" role="img" aria-label="스터디캠 졸라맨 아바타">
@@ -149,71 +21,74 @@ export function paintAvatar(mount, pose, active, status = 'tracking', now = perf
         <path d="M160 138v70m0-51-48 36m48-36 48 36m-48 15-32 55m32-55 32 55"/>
         <g class="avatar-head"><circle cx="160" cy="101" r="36"/><path class="avatar-eyes" d="M148 96v4m24-4v4"/><path d="M150 113q10 8 20 0"/></g>
       </g><path class="avatar-ground" d="M75 277h170"/>
-    </svg><svg class="cam-recognition" viewBox="0 0 320 320" role="img" aria-label="얼굴을 찾는 중">
-      <g class="recognition-ring-entry"><circle class="recognition-ring-track" cx="160" cy="160" r="82"/>
-      <circle class="recognition-spinner" cx="160" cy="160" r="82"/>
+    </svg><canvas class="cam-face-effect" aria-hidden="true"></canvas><svg class="cam-recognition" viewBox="0 0 320 320" role="img" aria-label="얼굴인식 중">
+      <g class="recognition-ring-entry"><circle class="recognition-ring-track" cx="160" cy="160" r="76"/>
+      <circle class="recognition-spinner" cx="160" cy="160" r="76" pathLength="515"/>
       </g>
       <g class="recognition-face" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
-        <g class="recognition-corner-entry" style="--corner-x:28px;--corner-y:28px"><path class="recognition-piece recognition-bracket bracket-tl" d="M127 115h-9q-7 0-7 7v9"/></g>
-        <g class="recognition-corner-entry" style="--corner-x:-28px;--corner-y:28px"><path class="recognition-piece recognition-bracket bracket-tr" d="M193 115h9q7 0 7 7v9"/></g>
-        <g class="recognition-corner-entry" style="--corner-x:28px;--corner-y:-28px"><path class="recognition-piece recognition-bracket bracket-bl" d="M111 189v9q0 7 7 7h9"/></g>
-        <g class="recognition-corner-entry" style="--corner-x:-28px;--corner-y:-28px"><path class="recognition-piece recognition-bracket bracket-br" d="M209 189v9q0 7-7 7h-9"/></g>
+        <path class="recognition-bracket" d="M127 115h-9q-7 0-7 7v9M193 115h9q7 0 7 7v9M111 189v9q0 7 7 7h9M209 189v9q0 7-7 7h-9"/>
         <g class="recognition-features">
-        <path class="recognition-piece recognition-eye eye-left" d="M140 143v10"/>
-        <path class="recognition-piece recognition-eye eye-right" d="M180 143v10"/>
-        <path class="recognition-piece recognition-nose" d="M161 142v21q0 4-4 4h-4"/>
-        <path class="recognition-piece recognition-mouth" d="M139 179Q160 197 181 179"/>
+          <path class="recognition-piece recognition-eye eye-left" d="M140 143v10"/>
+          <path class="recognition-piece recognition-eye eye-right" d="M180 143v10"/>
+          <path class="recognition-piece recognition-nose" d="M161 142v21q0 4-4 4h-4"/>
+          <path class="recognition-piece recognition-mouth" d="M139 179Q160 197 181 179"/>
         </g>
       </g>
     </svg><svg class="cam-paused" viewBox="0 0 320 320" role="img" aria-label="수동 일시정지" aria-hidden="true">
       <g fill="currentColor"><rect x="127" y="120" width="22" height="80" rx="5"/><rect x="171" y="120" width="22" height="80" rx="5"/></g>
     </svg><svg class="cam-warning" viewBox="0 0 320 320" role="img" aria-label="학습 행동 경고" aria-hidden="true">
-      <circle class="recovery-ring-track" cx="160" cy="160" r="82"/>
-      <circle class="recovery-ring-progress" cx="160" cy="160" r="82" pathLength="1" transform="rotate(-90 160 160)"/>
       <path d="M160 110v65" fill="none" stroke="currentColor" stroke-width="15" stroke-linecap="round"/><circle cx="160" cy="203" r="9" fill="currentColor"/>
     </svg>`;
   }
   let presentation = presentations.get(mount);
-  const returnedAfterLongLoss = status === 'tracking' && presentation?.missingSince != null && now - presentation.missingSince > 3000;
   if (presentation) {
     if (active && status === 'scanning') presentation.missingSince ??= now;
     else presentation.missingSince = null;
   }
   const briefLoss = active && status === 'scanning' && presentation?.desired === 'recognized' && now - presentation.missingSince <= 3000;
-  const recovering = presentation?.desired === 'warning' && ['scanning', 'paused'].includes(status);
-  const desired = status === 'identity-failed' || status === 'behavior-warning' || recovering ? 'warning' : status === 'manual-paused' ? 'paused' : briefLoss || status === 'tracking' && pose ? 'recognized' : status === 'off' ? 'idle' : status === 'error' ? 'error' : 'searching';
-  const recovered = presentation?.desired === 'warning' && desired === 'recognized';
-  if (!presentation || presentation.desired !== desired || returnedAfterLongLoss) {
-    const parts = desired === 'recognized' && !recovered ? captureFace(mount) : [];
+  const desired = status === 'identity-failed' ? 'rejected' : status === 'behavior-warning' ? 'warning'
+    : status === 'returning' ? 'returning' : ['manual-paused', 'paused'].includes(status) ? 'paused'
+    : briefLoss || status === 'tracking' && (pose || active) ? 'recognized'
+    : status === 'off' ? 'idle' : status === 'error' ? 'error' : status === 'verifying' ? 'searching' : 'loading';
+  if (!presentation || presentation.desired !== desired || verified) {
+    const animateMatch = verified && desired === 'recognized';
+    const showRing = ['loading', 'returning', 'searching', 'rejected'].includes(desired) || animateMatch;
+    const effect = showRing && ['loading', 'returning', 'searching', 'rejected'].includes(presentation?.desired) ? presentation.effect : null;
+    const recovering = desired === 'returning' || presentation?.desired === 'warning';
     clearTimeout(presentation?.timer);
-    presentation?.cancelMerge?.();
-    presentation = { desired, timer: null, cancelMerge: null };
+    if (!effect) presentation?.effect?.cancel();
+    presentation = { desired, timer: null, effect };
     presentations.set(mount, presentation);
-    mount.dataset.avatarPhase = desired === 'recognized' ? recovered ? 'avatar' : 'success' : desired;
-    if (desired === 'recognized' && !recovered) presentation.cancelMerge = mergeFace(parts, () => {
-      if (presentations.get(mount) !== presentation) return;
-      mount.dataset.avatarPhase = 'check';
+    mount.dataset.avatarPhase = desired === 'recognized' ? animateMatch ? 'success' : 'avatar' : desired;
+    const canvas = mount.querySelector('.cam-face-effect');
+    if (showRing && canvas?.getContext) presentation.effect ??= startFaceEffect(canvas, {loading: desired === 'loading', recovering});
+    if (showRing) presentation.effect?.setLoading(desired === 'loading');
+    if (desired === 'rejected') presentation.effect?.reject();
+    if (animateMatch) {
+      presentation.effect?.succeed();
       presentation.timer = setTimeout(() => {
-        if (presentations.get(mount) !== presentation) return;
-        mount.dataset.avatarPhase = 'avatar';
-        mount.querySelector('.cam-avatar').setAttribute('aria-hidden', 'false');
-        mount.querySelector('.cam-recognition').setAttribute('aria-hidden', 'true');
-        presentation.timer = null;
-      }, 700);
-    });
+        presentation.effect?.finish();
+        mount.dataset.avatarPhase = 'check';
+        presentation.timer = setTimeout(() => {
+          mount.dataset.avatarPhase = 'avatar';
+          mount.querySelector('.cam-avatar').setAttribute('aria-hidden', 'false');
+          mount.querySelector('.cam-recognition').setAttribute('aria-hidden', 'true');
+          presentation.timer = null;
+        }, 700);
+      }, typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : FACE_SUCCESS_MS);
+    }
   }
-  mount.querySelector('.cam-recognition').setAttribute('aria-label', desired === 'rejected' ? '본인 확인 실패' : desired === 'recognized' ? '얼굴 인식 완료' : desired === 'error' ? '얼굴 인식 연결 대기' : '얼굴을 찾는 중');
+  const remaining = recovery?.remainingMs;
+  const returnLabel = Number.isFinite(remaining) ? `복귀 확인 중 · ${(remaining / 1000).toFixed(1)}초 남음` : '복귀 확인 중';
+  mount.querySelector('.cam-recognition').setAttribute('aria-label', desired === 'returning' ? returnLabel : desired === 'rejected' ? '얼굴인식 실패' : desired === 'recognized' ? '얼굴인식 완료'
+    : desired === 'error' ? '카메라 인식 오류' : desired === 'loading' ? '학습 준비 중' : '얼굴인식 중');
   const avatar = mount.querySelector('.cam-avatar');
   avatar.setAttribute('aria-hidden', String(mount.dataset.avatarPhase !== 'avatar'));
   mount.querySelector('.cam-recognition').setAttribute('aria-hidden', String(['avatar', 'idle', 'paused', 'warning'].includes(mount.dataset.avatarPhase)));
-  mount.querySelector('.cam-paused').setAttribute('aria-hidden', String(desired !== 'paused'));
+  const pauseIcon=mount.querySelector('.cam-paused');
+  pauseIcon.setAttribute('aria-hidden', String(desired !== 'paused'));
+  pauseIcon.setAttribute('aria-label', status === 'manual-paused' ? '수동 일시정지' : '학습 일시정지');
   mount.querySelector('.cam-warning').setAttribute('aria-hidden', String(desired !== 'warning'));
-  const remaining = recovery?.remainingMs;
-  const progress = desired === 'warning' && Number.isFinite(remaining) && recovery.durationMs > 0
-    ? clamp(1 - remaining / recovery.durationMs, 0, 1) : 0;
-  mount.querySelector('.recovery-ring-progress').style.setProperty('stroke-dashoffset', String(1 - progress));
-  mount.querySelector('.cam-warning').setAttribute('aria-label', desired === 'warning' && Number.isFinite(remaining)
-    ? `복귀 확인 중 · ${(Math.max(0, remaining) / 1000).toFixed(1)}초 남음` : '학습 인식 실패 · 복귀 대기');
   avatar.classList.toggle('is-tracked', Boolean(pose));
   avatar.classList.toggle('is-active', active);
   avatar.style.setProperty('--avatar-x', `${pose?.x || 0}px`);

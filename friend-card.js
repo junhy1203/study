@@ -1,5 +1,5 @@
 import {element as el} from './study-api.js?v=20261024-selfhost1';
-import {pixelAvatar,avatarBackground} from './avatar-renderer.js?v=20261106-accessory1';
+import {pixelAvatar,avatarBackground} from './avatar-renderer.js?v=20261107-impact1';
 const time=value=>{const n=Math.max(0,Math.floor(value||0));return `${Math.floor(n/3600)}시간 ${Math.floor(n%3600/60)}분`;};
 export function renderFriendCard(root,data,{self=false}={}){
   const signature=JSON.stringify([data.displayName,data.bio,data.avatar,data.friendSummary,self]);if(root.dataset.friendCardSignature===signature)return root;root.dataset.friendCardSignature=signature;

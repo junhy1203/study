@@ -1,8 +1,8 @@
-import { getStudyData } from './data.js?v=20261105-shop10';
-import { updatePlan } from './integrations.js?v=20261103-privateui1';
+import { getStudyData, setLoading } from './data.js?v=20261107-face-meals1';
+import { updatePlan } from './integrations.js?v=20261107-face-meals1';
 import { planSubjects } from './functions/plan-domain.js?v=20261022-18';
 import { goalProgress, goalSummary, durationLabel, periodLabels } from './goal-state.js?v=20261022-18';
-import { showToast } from './notifications.js?v=20261022-18';
+import { showToast } from './notifications.js?v=20261109-capsule1';
 
 const rendered = new WeakMap();
 let pending = false;
@@ -55,9 +55,7 @@ function node(tag, className, text) {
   return element;
 }
 function status(message, error = false) {
-  for (const element of document.querySelectorAll('[data-plan-status]')) {
-    element.textContent = message;element.hidden = !message;element.classList.toggle('is-error',error);
-  }
+  if (message) showToast(message);
 }
 function render() {
   const {profile,ready,user,stats,loading,failed} = getStudyData();
@@ -65,12 +63,15 @@ function render() {
   const summary = goalSummary(goals,stats);
   const statsPending = ['today','days','month'].some(key => loading.has(key));
   const statsFailed = ['today','days','month'].some(key => failed.has(key));
-  for (const element of document.querySelectorAll('[data-goal-summary]')) element.textContent = !ready ? '로딩 중…' : !user ? '로그인 후 목표를 세워 보세요' : statsFailed ? '학습 기록 확인 필요' : statsPending && goals.length ? '달성 현황 확인 중…' : `${summary.total}개 중 ${summary.completed}개 달성`;
+  for (const element of document.querySelectorAll('[data-goal-summary]')) {
+    setLoading(element,!ready||Boolean(statsPending&&goals.length&&!statsFailed));
+    element.textContent = !ready ? '로딩 중…' : !user ? '로그인 후 목표를 세워 보세요' : statsFailed ? '학습 기록 확인 필요' : statsPending && goals.length ? '달성 현황 확인 중…' : `${summary.total}개 중 ${summary.completed}개 달성`;
+  }
   for (const element of document.querySelectorAll('[data-goal-summary-progress]')) element.style.width = `${summary.total ? summary.completed / summary.total * 100 : 0}%`;
   for (const element of document.querySelectorAll('[data-goal-list]')) {
     const signature = JSON.stringify([ready,user?.uid,subjects,goals,stats,statsPending,statsFailed]);
     if (rendered.get(element) === signature) continue;
-    rendered.set(element,signature);element.replaceChildren();
+    rendered.set(element,signature);element.replaceChildren();setLoading(element,!ready);
     if (!ready || !user || !goals.length) {
       element.append(node('p','empty-data',!ready ? '로딩 중…' : !user ? '로그인하면 목표를 계정에 저장할 수 있습니다.' : '첫 목표를 추가해 보세요. 작은 목표부터 시작해도 좋아요.'));
       continue;

@@ -1,5 +1,5 @@
 import {authReady,getAuthUser} from './auth.js?v=20261104-1';
-import {getStudyData} from './data.js?v=20261105-shop10';
+import {getStudyData,setLoading} from './data.js?v=20261107-face-meals1';
 import {studyCall,serviceError,element as el,duration} from './study-api.js?v=20261024-selfhost1';
 import {studyDate} from './functions/report-math.js';
 let cached=null,cacheKey='',pending=false,epoch=0;
@@ -32,7 +32,7 @@ function breakdown(values,total,names={}) {
 }
 function paint(report) {
   for(const root of document.querySelectorAll('[data-daily-report]')) {
-    root.replaceChildren();
+    setLoading(root,false);root.replaceChildren();
     const headline=el('p','report-date',`${report.date.replaceAll('-','.')} · 한국 시간 기준`);
     const metrics=el('dl','report-metrics');
     metrics.append(metric('공부한 시간',duration(report.totalSeconds)),metric('학습 세션',`${report.sessionCount}회`),metric('최장 세션',duration(report.longestSeconds)),metric('평균 세션',duration(report.averageSeconds)),metric('세션 내 일시정지',duration(report.pauseSeconds)),metric('세션 내 학습 비율',`${report.studyRatio}%`));
@@ -71,23 +71,24 @@ async function load(force=false) {
   const root=document.querySelector('[data-daily-report]');
   if(!root||document.hidden||root.closest?.('dialog')&&!root.closest('dialog').open)return;
   const user=getAuthUser(),data=getStudyData();
-  if(!user){for(const node of document.querySelectorAll('[data-daily-report]'))node.textContent='로그인하면 오늘의 리포트를 볼 수 있어요.';return;}
+  if(!user){for(const node of document.querySelectorAll('[data-daily-report]')){setLoading(node,false);node.textContent='로그인하면 오늘의 리포트를 볼 수 있어요.';}return;}
   if(!data.ready)return;
   const key=`${user.uid}:${studyDate()}:${data.profile?.studyRevision||0}`;
   if(!force&&key===cacheKey&&cached){paint(cached);return;}
   if(pending)return;
   pending=true;const token=epoch;
+  for(const node of document.querySelectorAll('[data-daily-report]'))if(key!==cacheKey){setLoading(node,true);node.textContent='리포트를 불러오는 중…';}
   for(const node of document.querySelectorAll('[data-report-refresh]'))node.disabled=true;
   try {
     const report=await studyCall('getDailyReport');
     if(token!==epoch||getAuthUser()?.uid!==user.uid)return;
     cached=report;cacheKey=key;paint(report);
-  }catch(error){if(token===epoch)for(const node of document.querySelectorAll('[data-daily-report]')){node.replaceChildren(el('p','auth-status is-error',serviceError(error)));}}
+  }catch(error){if(token===epoch)for(const node of document.querySelectorAll('[data-daily-report]')){setLoading(node,false);node.replaceChildren(el('p','auth-status is-error',serviceError(error)));}}
   finally{pending=false;for(const node of document.querySelectorAll('[data-report-refresh]'))node.disabled=false;if(token!==epoch)void load();}
 }
 document.addEventListener('click',event=>{if(event.target.closest('[data-report-refresh]'))void load(true);});
 for(const event of ['study:navigated','study:data-changed'])window.addEventListener(event,()=>void load());
 window.addEventListener('study:panel-opened',event=>{if(event.detail?.kind==='report')void load();});
-window.addEventListener('study:auth-changed',()=>{epoch++;cached=null;cacheKey='';for(const node of document.querySelectorAll('[data-daily-report]'))node.textContent='리포트를 불러오는 중…';void load();});
+window.addEventListener('study:auth-changed',()=>{epoch++;cached=null;cacheKey='';for(const node of document.querySelectorAll('[data-daily-report]')){setLoading(node,true);node.textContent='리포트를 불러오는 중…';}void load();});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)void load();});
 void authReady.then(()=>load());

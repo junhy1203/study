@@ -4,6 +4,7 @@ import vm from 'node:vm';
 import {readFile} from 'node:fs/promises';
 import {createTokenVerifier} from '../functions/token-verifier.js';
 import {isNetworkFailure,readableNetworkError} from '../network-errors.js';
+import {createReadCache} from '../client-cache.js';
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 test('concurrent authenticated data requests share verification and one remote account lookup',async()=>{
   let checks=0,lookups=0,now=0;
@@ -24,7 +25,7 @@ test('sensitive face checks remain fresh and rejected account lookups can retry'
 async function clientFixture(){
   const requests=[];let uid='alice',reply=null;
   const source=(await readFile(new URL('../server-client.js',import.meta.url),'utf8')).replace(/^import .*;\r?\n/gm,'').replace(/^export /gm,'');
-  const context=vm.createContext({URL,AbortSignal,queueMicrotask,setTimeout,clearTimeout,TextDecoder,isNetworkFailure,readableNetworkError,authReady:Promise.resolve(true),getAuthUser:()=>({uid,getIdToken:async()=>uid}),backendConfig:{apiBaseUrl:'https://api.example.test'},fetch:async(url,options)=>{
+  const context=vm.createContext({URL,AbortSignal,AbortController,queueMicrotask,setTimeout,clearTimeout,TextDecoder,isNetworkFailure,readableNetworkError,authReady:Promise.resolve(true),getAuthUser:()=>({uid,getIdToken:async()=>uid}),backendConfig:{apiBaseUrl:'https://api.example.test'},fetch:async(url,options)=>{
     const body=JSON.parse(options.body);requests.push({path:new URL(url).pathname,body});
     if(typeof reply==='function')return reply(url,options);
     const value=ref=>ref.kind==='query'?{docs:[{id:'row',exists:true,data:{totalSeconds:42}}]}:{id:ref.path.split('/').at(-1),exists:true,data:{totalSeconds:7}};
@@ -32,7 +33,7 @@ async function clientFixture(){
     const payload=reply||(body.reads?{results:body.reads.map(ref=>({value:value(ref)}))}:value(body));
     return body.reads?new Response(payload.results.map((row,index)=>JSON.stringify({index,...row})).join('\n')+'\n'):new Response(JSON.stringify(payload));
   }});
-  vm.runInContext(source+'\nglobalThis.client={doc,collection,getDoc,getDocs,serverCallable,readLines};',context);
+  vm.runInContext(source+'\nglobalThis.client={doc,collection,getDoc,getDocs,serverCallable,readLines,onSnapshot};',context);
   return {client:context.client,requests,setUid:value=>{uid=value;},setReply:value=>{reply=value;}};
 }
 test('parallel document/query reads share one batch and duplicate reads share their result',async()=>{
@@ -81,12 +82,39 @@ test('queued reads never cross accounts and large bursts split at sixteen refere
   await Promise.all(Array.from({length:35},(_,i)=>f.client.getDoc(f.client.doc(null,'users','bob','stats',String(i)))));
   assert.deepEqual(f.requests.map(r=>r.body.reads?.length||1),[16,16,3]);
 });
-test('fast values render before a slow ranking request finishes',async()=>{
+test('statistics remain available for display after expiration without counting as fresh',()=>{
+  let now=0;
+  const cache=createReadCache({storage:null,now:()=>now});
+  cache.set('today',{totalSeconds:123},100,500);
+  now=200;
+  assert.equal(cache.get('today'),undefined);
+  assert.equal(cache.get('today',{allowStale:true}).totalSeconds,123);
+  now=500;
+  assert.equal(cache.get('today',{allowStale:true}),undefined);
+});
+test('initial statistics arrive through the profile stream and older servers release pending reads',async()=>{
+  const fixture=await clientFixture(),ref=fixture.client.doc(null,'users','alice');
+  for(const supported of [true,false]){
+    const profile={type:'snapshot',exists:true,id:'alice',data:{studyRevision:1}};
+    const value={exists:true,id:'summary',data:{totalSeconds:123}};
+    fixture.setReply(new Response([supported?{...profile,initialReads:true}:profile,...(supported?[{type:'read',index:0,value}]:[])].map(row=>JSON.stringify(row)).join('\n')+'\n'));
+    const result=await new Promise(resolve=>{
+      const stop=fixture.client.onSnapshot(ref,()=>{},assert.fail,{
+        initialReads:[fixture.client.doc(null,'users','alice','stats','summary')],
+        onInitialRead:(_,item)=>{resolve(item);queueMicrotask(stop);},
+      });
+    });
+    assert.equal(result?.data.totalSeconds,supported?123:undefined);
+  }
+  assert.ok(fixture.requests.every(request=>request.path==='/api/v1/watch'&&request.body.initialReads.length===1));
+});
+test('fast values from the initial stream render before a slow ranking request finishes',async()=>{
   const source=await readFile(new URL('../data.js',import.meta.url),'utf8');
-  const fn=source.slice(source.indexOf('async function loadVisibleData()'),source.indexOf('\nasync function connectUser()'));
+  const fn=source.slice(source.indexOf('function statsRef('),source.indexOf('\nasync function connectUser()'));
   let releaseRanking,paints=0;
-  const context=vm.createContext({focusReceiptEpoch:0,state:{profile:{},pending:new Set(['today','ranking']),failed:new Set()},sdk:{doc:(_, ...parts)=>({path:parts.join('/')}),getDoc:async()=>({data:()=>({totalSeconds:123})}),collection:(_, ...parts)=>({path:parts.join('/')}),query:ref=>ref,orderBy:()=>({}),limit:()=>({}),getDocs:()=>new Promise(resolve=>{releaseRanking=()=>resolve({docs:[]});})},db:{},connectedUid:'alice',generation:1,document:{hidden:false},dateKey:()=> '2026-11-02',monday:()=> '2026-11-02',visibleDataKeys:()=>new Set(['today','ranking']),statsRevision:()=>0,readCache:{get:()=>undefined,set(){}},dataRequests:new Map(),paint(){paints++;},notice(error){throw error;},errorText:e=>e});
-  vm.runInContext(fn+'\nglobalThis.load=loadVisibleData;',context);const loading=context.load();await settle();
+  const context=vm.createContext({focusReceiptEpoch:0,state:{profile:{},pending:new Set(['today','ranking']),available:new Set(),failed:new Set()},sdk:{getDoc:assert.fail,getDocs:assert.fail},db:{},connectedUid:'alice',generation:1,document:{hidden:false},dateKey:()=> '2026-11-02',visibleDataKeys:()=>new Set(['today','ranking']),statsRevision:()=>0,readCache:createReadCache({storage:null}),dataRequests:new Map(),paint(){paints++;},notice(error){throw error;},errorText:e=>e});
+  const reads=new Map([['today',Promise.resolve({data:{totalSeconds:123}})],['ranking',new Promise(resolve=>{releaseRanking=()=>resolve({docs:[]});})]]);
+  vm.runInContext(fn+'\nglobalThis.load=loadVisibleData;',context);const loading=context.load(reads);await settle();
   assert.equal(context.state.today.totalSeconds,123);assert.ok(paints>0);assert.equal(context.state.pending.has('ranking'),true);
   releaseRanking();await loading;assert.equal(context.state.pending.size,0);
 });

@@ -140,7 +140,7 @@ export function createFaceService({db,kms,projectId,configured=()=>true,clock=Da
         grant();requireProof(state.grant.publicKey,'lock',uid,data.installationId,state.grant.id,data.signature);state.grant=null;state.unlock=null;return save({locked:true});
       }
       if(action==='revokeFaceEnrollment') {
-        recent(token,now);if(active&&!active.revoked){state.active={...active,revoked:true,revokedAtMs:now};state.audit.push({event:'revoked',at:now});}
+        if(active&&!active.revoked){state.active={...active,revoked:true,revokedAtMs:now};state.audit.push({event:'revoked',at:now});}
         state.grant=null;state.ticket=null;state.unlock=null;return save({revoked:true});
       }
       fail('not-found','지원하지 않는 얼굴 보안 요청입니다.');

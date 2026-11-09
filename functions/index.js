@@ -84,6 +84,7 @@ export const startStudySession = onCall(options, async (request) => {
   await assertStudyAccount(request);
   const subjectId = request.data?.subjectId;
   const cameraMode = request.data?.cameraMode === true;
+  const unrankedCamera = cameraMode && request.data?.unrankedCamera === true;
   const controllerId = request.data?.controllerId;
   if (cameraMode && (typeof controllerId !== 'string' || !/^[a-f0-9-]{36}$/.test(controllerId))) throw new HttpsError('invalid-argument', '카메라 제어 ID가 올바르지 않습니다.');
   const profileRef = db.doc(`users/${uid}`);
@@ -92,7 +93,7 @@ export const startStudySession = onCall(options, async (request) => {
   let session;
   await db.runTransaction(async (transaction) => {
     const profile = await transaction.get(profileRef);
-    const faceAccess=cameraMode?await authorizeFaceStudy(transaction,db,uid,request.data):{verificationType:'manual'};
+    const faceAccess=cameraMode&&!unrankedCamera?await authorizeFaceStudy(transaction,db,uid,request.data):{verificationType:'manual'};
     if (!profile.exists) throw new HttpsError('failed-precondition', '계정 프로필을 먼저 생성해 주세요.');
     if (!planSubjects(profile.data()).some(row => row.id === subjectId)) throw new HttpsError('invalid-argument', '설정에 추가한 과목을 선택해 주세요.');
     if (profile.data().activeSessionId) throw new HttpsError('already-exists', '진행 중인 학습을 먼저 종료해 주세요.');
@@ -120,15 +121,15 @@ export const syncStudyCamera = onCall(options, async request => {
     const session = record.data();
     if (!session || session.status !== 'active') throw new HttpsError('failed-precondition', '진행 중인 기록이 없습니다.',{terminalReason:'finished',canResume:false});
     if (!session.cameraMode || controllerId !== session.controllerId) throw new HttpsError('permission-denied', '학습을 시작한 카메라에서만 제어할 수 있습니다.');
-    const faceAccess=await authorizeFaceStudy(transaction,db,uid,request.data,session);
+    const faceAccess=session.verificationType==='manual'?{}:await authorizeFaceStudy(transaction,db,uid,request.data,session);
     if((session.presenceUntilMs??Infinity)<=Date.now())throw new HttpsError('failed-precondition','카메라 연결이 만료되었습니다.',{terminalReason:'presence-expired',canResume:false});
     if(eventId && session.lastEventId===eventId)return {ignored:true,session:{...session,startedAtMs:session.startedAt.toMillis(),serverNowMs:Date.now()}};
     if (sequence <= session.sequence) return { ignored: true, session:{...session,startedAtMs:session.startedAt.toMillis(),serverNowMs:Date.now()} };
     const profile=(await transaction.get(db.doc(`users/${uid}`))).data();
     const activity=await readActivityRoom(transaction,db,uid,profile);
-    const wordPaused=Boolean(session.wordSessionId && (session.wordLeaseUntilMs>Date.now() || profile?.wordStudySessionId===session.wordSessionId&&profile?.wordAppUntilMs>Date.now()));
-    const update = {...checkpointCamera({ ...session,...faceAccess, startedAtMs: session.startedAt.toMillis() }, Date.now(), tracking&&!wordPaused),...faceAccess,wordPaused,...(!wordPaused?{wordSessionId:null,wordLeaseUntilMs:null}:{wordSessionId:session.wordSessionId,wordLeaseUntilMs:session.wordLeaseUntilMs})};
     const updatedAt = Timestamp.now();
+    const wordPaused=Boolean(session.wordSessionId && session.wordLeaseUntilMs>updatedAt.toMillis());
+    const update = {...checkpointCamera({ ...session,...faceAccess, startedAtMs: session.startedAt.toMillis() }, updatedAt.toMillis(), tracking&&!wordPaused,undefined,request.data.creditUntilMs),...faceAccess,wordPaused,...(!wordPaused?{wordSessionId:null,wordLeaseUntilMs:null}:{wordSessionId:session.wordSessionId,wordLeaseUntilMs:session.wordLeaseUntilMs})};
     const presenceUntilMs=updatedAt.toMillis()+CAMERA_PRESENCE_MS;
     // Publish the confirmed state in the SAME transaction as the camera checkpoint.
     // Waiting for the owner's separate room poll left resumed peers resting for ~20s.

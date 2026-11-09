@@ -1,0 +1,239 @@
+.avatar-impact-scene :where(g[class]){
+  --impact-delay:0s;
+  transform-origin:0 0;
+  animation:var(--track,none) var(--tempo,1s) linear var(--impact-delay) infinite;
+}
+.avatar-impact-scene .impact-beat{--track:var(--beat);--tempo:var(--cycle)}
+.avatar-impact-scene .impact-echo{--track:impact-echo;--tempo:var(--cycle);transform-origin:9px 21px}
+.avatar-impact-scene .impact-glint{--track:impact-glint;--tempo:1.3s}
+.avatar-impact-scene .impact-embers{--track:impact-embers;--tempo:.92s}
+
+[data-impact-effect=flame]{--beat:impact-flame;--cycle:1.65s}
+[data-impact-effect=galaxy]{--beat:impact-galaxy;--cycle:3.1s}
+[data-impact-effect=snow]{--beat:impact-snow;--cycle:1.85s}
+[data-impact-effect=runes]{--beat:impact-runes;--cycle:2.45s}
+[data-impact-effect=lightning]{--beat:impact-lightning;--cycle:2.15s}
+[data-impact-effect=swords]{--beat:impact-swords;--cycle:1.92s}
+[data-impact-effect=phoenixfire]{--beat:impact-phoenix;--cycle:2.32s}
+[data-impact-effect=void]{--beat:impact-void;--cycle:2.58s}
+[data-impact-effect=poison]{--beat:impact-poison;--cycle:2.08s}
+[data-impact-effect=crystals]{--beat:impact-crystals;--cycle:2.24s}
+[data-impact-effect=meteors]{--beat:impact-meteors;--cycle:1.86s}
+[data-impact-effect=dragonsoul]{--beat:impact-dragon;--cycle:2.8s}
+[data-impact-effect=holy]{--beat:impact-holy;--cycle:2.75s}
+[data-impact-effect=ravens]{--beat:impact-ravens;--cycle:2.1s}
+[data-impact-effect=neonloop]{--beat:impact-neon;--cycle:1.36s}
+[data-impact-effect=vinylbeat]{--beat:impact-vinyl;--cycle:2.4s}
+[data-impact-effect=chromehaze]{--beat:impact-chrome;--cycle:2.25s}
+[data-impact-effect=prism]{--beat:impact-prism;--cycle:2.2s}
+
+.avatar-fx-flame .impact-beat,.avatar-fx-crystals .impact-beat,.avatar-fx-swords .impact-beat,
+.avatar-fx-phoenixfire .impact-beat,.avatar-fx-dragonsoul .impact-beat{animation-timing-function:cubic-bezier(.16,.75,.25,1)}
+.avatar-fx-galaxy .impact-beat,.avatar-fx-runes .impact-beat,.avatar-fx-void .impact-beat,
+.avatar-fx-vinylbeat .impact-beat,.avatar-fx-neonloop .impact-beat{transform-origin:9px 10px}
+.avatar-fx-phoenixfire .impact-beat,.avatar-fx-dragonsoul .impact-beat,.avatar-fx-poison .impact-beat{transform-origin:9px 19px}
+.avatar-fx-holy .impact-beat{transform-origin:9px -5px}
+.avatar-fx-galaxy .impact-echo,.avatar-fx-void .impact-echo{transform-origin:9px 10px;animation-delay:calc(var(--cycle) * .16)}
+.avatar-fx-meteors .impact-echo{animation-delay:calc(var(--impact-delay) + .62s)}
+.avatar-fx-chromehaze .impact-echo{--track:impact-sheen;transform-origin:9px 10px}
+.avatar-impact-scene .impact-frost{--track:impact-frost;--tempo:1.6s}
+.avatar-impact-scene .impact-suction{--track:impact-suction;--tempo:1.45s}
+.avatar-impact-scene .impact-bubble{--track:impact-bubble;--tempo:1.45s}
+.avatar-impact-scene .impact-fume{--track:impact-fume;--tempo:2.25s}
+.avatar-impact-scene .impact-flap-left,.avatar-impact-scene .impact-flap-right{--track:impact-flap;--tempo:.36s}
+.avatar-impact-scene .impact-flap-left{--wing:-1}
+.avatar-impact-scene .impact-flap-right{--wing:1}
+.avatar-impact-scene .impact-neon-trace{--track:impact-neon-trace;--tempo:1.36s}
+.avatar-impact-scene .impact-bar{--track:impact-bar;--tempo:.8s;transform-origin:9px 21px}
+.avatar-impact-scene .impact-ray{--track:impact-ray;--tempo:2.2s;transform-origin:13px 9px}
+
+@keyframes impact-flame{
+  0%,100%{opacity:.7;transform:scale(.9,.42)}
+  18%{opacity:.84;transform:scale(1.24,.26)}
+  27%{opacity:1;transform:scale(.83,1.42)}
+  38%{transform:scale(1.12,.92)}
+  48%{transform:scale(.9,1.22) skewX(-9deg)}
+  70%{opacity:.84;transform:scale(1,.64) skewX(8deg)}
+}
+@keyframes impact-galaxy{
+  0%{opacity:.72;transform:rotate(0) scale(.88)}
+  42%{opacity:.62;transform:rotate(112deg) scale(.82)}
+  57%{opacity:1;transform:rotate(207deg) scale(1.12)}
+  74%{opacity:.95;transform:rotate(286deg) scale(1)}
+  100%{opacity:.72;transform:rotate(360deg) scale(.88)}
+}
+@keyframes impact-snow{
+  0%,100%{opacity:.2;transform:translateY(-3px) rotate(-35deg) scale(.52)}
+  19%{opacity:.96;transform:translateY(-1px) rotate(8deg) scale(1.22)}
+  38%{transform:translateY(1px) rotate(32deg) scale(.85)}
+  67%{opacity:.88;transform:translateY(3px) rotate(60deg) scale(.8)}
+  85%{opacity:0;transform:translateY(5px) rotate(88deg) scale(.4)}
+}
+@keyframes impact-runes{
+  0%,100%{opacity:.65;transform:rotate(-24deg) scale(.94)}
+  21%{opacity:.94;transform:rotate(25deg) scale(1)}
+  37%{opacity:.58;transform:rotate(25deg) scale(.92)}
+  43%{opacity:1;transform:rotate(39deg) scale(1.1)}
+  61%,70%{opacity:.86;transform:rotate(39deg) scale(1)}
+}
+@keyframes impact-lightning{
+  0%,14%,63%,100%{opacity:.12;transform:translateY(-1.4px) scaleY(.94)}
+  22%{opacity:.45;transform:translateY(-1.4px) scaleY(.97)}
+  29%,37%{opacity:1;transform:translateY(0) scaleY(1.05)}
+  49%{opacity:.35;transform:translateY(.6px) scaleY(1)}
+}
+@keyframes impact-swords{
+  0%,100%{opacity:.08;transform:rotate(-48deg) scale(.76)}
+  21%{opacity:.26;transform:rotate(-57deg) scale(.83)}
+  31%{opacity:1;transform:rotate(13deg) scale(1.09)}
+  45%{opacity:.85;transform:rotate(37deg) scale(1.02)}
+  68%{opacity:0;transform:rotate(62deg) scale(.92)}
+}
+@keyframes impact-phoenix{
+  0%,100%{opacity:.58;transform:scale(.67,.65) translateY(1px)}
+  19%{opacity:.72;transform:scale(.58,.54) translateY(2px)}
+  30%{opacity:1;transform:scale(1.13,1.24) translateY(-2px)}
+  44%{transform:scale(.94,1.08) translateY(-1px)}
+  56%{opacity:.91;transform:scale(1.02,1.16) translateY(-2px)}
+  74%{transform:scale(.85,.9)}
+}
+@keyframes impact-void{
+  0%,100%{opacity:.61;transform:scale(.79,1.02) rotate(-9deg)}
+  25%{opacity:.8;transform:scale(.38,1.1) rotate(-16deg)}
+  39%{opacity:.88;transform:scale(.19,1.16) rotate(-12deg)}
+  48%{opacity:1;transform:scale(1.1,1) rotate(7deg)}
+  56%{transform:scale(.94,1.03) rotate(-4deg)}
+  70%{opacity:.84;transform:scale(1.02,.98) rotate(1deg)}
+}
+@keyframes impact-poison{
+  0%,100%{opacity:.62;transform:scale(.93,.79)}
+  25%{opacity:.86;transform:scale(1.03,.71)}
+  43%{opacity:1;transform:scale(1.12,1.28)}
+  58%{opacity:.79;transform:scale(.96,.9)}
+  77%{opacity:.83;transform:scale(1.05,1.14)}
+}
+@keyframes impact-crystals{
+  0%,100%{opacity:.55;transform:scale(.86,.24)}
+  24%{opacity:.55;transform:scale(.72,.18)}
+  33%{opacity:1;transform:scale(1.06,1.25)}
+  42%{transform:scale(.99,.91)}
+  55%,73%{opacity:.92;transform:scale(1,1)}
+  89%{opacity:.52;transform:scale(.9,.42)}
+}
+@keyframes impact-meteors{
+  0%,20%{opacity:0;transform:translate(-5px,-6px) scale(.58)}
+  31%{opacity:.9;transform:translate(-2px,-3px) scale(.9)}
+  49%{opacity:1;transform:translate(4px,7px) scale(1.13)}
+  60%{opacity:0;transform:translate(8px,14px) scale(.88)}
+  100%{opacity:0;transform:translate(8px,14px) scale(.88)}
+}
+@keyframes impact-dragon{
+  0%,100%{opacity:.46;transform:translate(-1px,2px) scale(.86) rotate(-17deg)}
+  22%{opacity:.79;transform:translate(-2px,1px) scale(.9) rotate(-24deg)}
+  38%{opacity:1;transform:translate(1px,-2px) scale(1.12) rotate(10deg)}
+  52%{transform:translate(0,-1px) scale(.99) rotate(-3deg)}
+  73%{opacity:.88;transform:translate(0,-.6px) scale(1.04) rotate(1deg)}
+}
+@keyframes impact-holy{
+  0%,100%{opacity:.48;transform:scale(.74,.52)}
+  20%{opacity:.66;transform:scale(.4,.48)}
+  28%{opacity:1;transform:scale(.86,1.04)}
+  41%{transform:scale(1.21,1)}
+  66%{opacity:.84;transform:scale(1,1)}
+  87%{opacity:.56;transform:scale(.85,.78)}
+}
+@keyframes impact-ravens{
+  0%,100%{opacity:0;transform:translate(-5px,3px) rotate(-16deg) scale(.66)}
+  20%{opacity:1;transform:translate(-1px,0) rotate(-8deg) scale(.9)}
+  36%{transform:translate(2px,-3px) rotate(-13deg) scale(1.07)}
+  55%{opacity:.98;transform:translate(4px,.5px) rotate(14deg) scale(.94)}
+  81%{opacity:0;transform:translate(8px,-3px) rotate(-14deg) scale(.55)}
+}
+@keyframes impact-neon{
+  0%,100%{opacity:.7;transform:scale(.95) rotate(-5deg)}
+  21%{opacity:1;transform:scale(1.08) rotate(5deg)}
+  39%{opacity:.82;transform:scale(1) rotate(0)}
+  61%{opacity:1;transform:scale(1.12,.92) rotate(-8deg)}
+  77%{transform:scale(1,1.04) rotate(-3deg)}
+}
+@keyframes impact-vinyl{
+  0%{transform:rotate(0) scale(.95)}
+  16%{transform:rotate(57deg) scale(1.1)}
+  28%{transform:rotate(91deg) scale(.97)}
+  44%{transform:rotate(164deg) scale(1.1)}
+  59%{transform:rotate(184deg) scale(.97)}
+  76%{transform:rotate(274deg) scale(1.13)}
+  100%{transform:rotate(360deg) scale(.95)}
+}
+@keyframes impact-chrome{
+  0%,100%{opacity:.58;transform:translate(-1px,1px) skewX(-13deg) scale(.92,.58)}
+  30%{opacity:.83;transform:translate(-2px,-2px) skewX(10deg) scale(1.03,1.04)}
+  47%{opacity:1;transform:translate(1px,-1px) skewX(-19deg) scale(1.1,1.18)}
+  69%{transform:translate(2px,2px) skewX(20deg) scale(.9,.76)}
+}
+@keyframes impact-prism{
+  0%,100%{opacity:.18}
+  19%{opacity:.44}
+  30%,52%{opacity:1}
+  77%{opacity:.58}
+}
+
+@keyframes impact-echo{
+  0%,18%,100%{opacity:0;transform:scale(.74)}
+  29%{opacity:.95;transform:scale(.9)}
+  59%,99%{opacity:0;transform:scale(1.28)}
+}
+@keyframes impact-glint{
+  0%,100%{opacity:.28;transform:scale(.55) rotate(-12deg)}
+  29%{opacity:1;transform:scale(1.18) rotate(14deg)}
+  48%{opacity:.64;transform:scale(.8) rotate(22deg)}
+}
+@keyframes impact-embers{
+  0%,100%{opacity:0;transform:translateY(1px) scale(.55)}
+  30%{opacity:1;transform:translate(.6px,-1px) scale(.95)}
+  82%{opacity:0;transform:translate(-1px,-5px) scale(.4)}
+}
+@keyframes impact-frost{
+  0%,100%{opacity:0;transform:translateY(1px) scale(.5)}
+  25%{opacity:.94;transform:translate(.7px,-1.6px) scale(.8) rotate(34deg)}
+  71%{opacity:0;transform:translate(1.6px,4px) scale(.38) rotate(120deg)}
+}
+@keyframes impact-suction{
+  0%,100%{opacity:0;transform:scale(.72) rotate(-100deg)}
+  29%{opacity:.92;transform:translateY(-2px) scale(.84) rotate(-45deg)}
+  79%{opacity:.21;transform:translateY(3px) scale(.4) rotate(100deg)}
+}
+@keyframes impact-bubble{
+  0%,100%{opacity:0;transform:translateY(1px) scale(.3)}
+  21%{opacity:.86;transform:translate(.8px,-2px) scale(.74)}
+  52%{opacity:1;transform:translate(-.7px,-5px) scale(1.16)}
+  66%{opacity:0;transform:translate(0,-6.5px) scale(1.58,.54)}
+}
+@keyframes impact-fume{
+  0%,100%{opacity:0;transform:translateY(3px) scale(.66)}
+  34%{opacity:.92;transform:translateY(0) scale(1.05)}
+  82%{opacity:.22;transform:translate(1px,-4px) scale(1.35)}
+}
+@keyframes impact-flap{
+  0%,100%{transform:rotate(calc(var(--wing) * -19deg)) scaleY(1)}
+  42%{transform:rotate(calc(var(--wing) * 25deg)) scaleY(.72)}
+}
+@keyframes impact-neon-trace{to{stroke-dashoffset:-57}}
+@keyframes impact-bar{
+  0%,100%{opacity:.58;transform:scaleY(.4)}
+  22%{opacity:1;transform:scaleY(1.19)}
+  43%{transform:scaleY(.68)}
+  57%{opacity:.89;transform:scaleY(1)}
+}
+@keyframes impact-sheen{
+  0%,100%{opacity:.23;transform:rotate(-28deg)}
+  43%{opacity:1;transform:rotate(28deg)}
+  61%{opacity:.35;transform:rotate(40deg)}
+}
+@keyframes impact-ray{
+  0%,100%{transform:scale(.22) rotate(-6deg)}
+  19%{transform:scale(.34) rotate(-4deg)}
+  36%{transform:scale(1.08) rotate(2deg)}
+  51%,62%{transform:scale(.98) rotate(0)}
+  85%{transform:scale(.6) rotate(4deg)}
+}

@@ -11,13 +11,15 @@ export const STUDY_CONTRACT_VERSION = '2026-10-24';
 export const HEARTBEAT_MS = 5000;
 
 // Aggregate only server-observed active windows. An expired lease never credits the gap.
-export function checkpointCamera(session, nowMs, tracking, leaseMs = CAMERA_LEASE_MS) {
+export function checkpointCamera(session, nowMs, tracking, leaseMs = CAMERA_LEASE_MS, creditUntilMs = nowMs) {
   const now = Math.floor(nowMs / 1000) * 1000;
   const deadline = Math.min(session.startedAtMs + MAX_SESSION_MS,session.faceAuthUntilMs??Infinity,session.faceLeaseUntilMs??Infinity);
   const buckets = new Map((session.segments || []).map(segment => [segment.date, { ...segment }]));
   let hourlySeconds = session.hourlySeconds || {};
   if (session.activeSinceMs != null) {
-    const end = Math.min(now, session.leaseUntilMs, deadline);
+    // A reported interruption can only shorten the server-observed window.
+    const cutoff=!tracking&&Number.isFinite(creditUntilMs)?Math.max(0,Math.floor(creditUntilMs/1000)*1000):now;
+    const end = Math.min(now, session.leaseUntilMs, deadline, cutoff);
     if (end > session.activeSinceMs) hourlySeconds = mergeHours(hourlySeconds, hourlyInterval(session.activeSinceMs, end));
     if (end > session.activeSinceMs) for (const segment of splitStudyInterval(session.activeSinceMs, end)) {
       const previous = buckets.get(segment.date);

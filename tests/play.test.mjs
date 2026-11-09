@@ -1,7 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
 import {avatarInput,readPlayProfile,savePlayProfile,studyPersonality,SCHOLARS} from '../functions/play-service.js';
+import {STUDY_TYPE_GROUPS,studyRadar} from '../study-personality-types.js';
 const avatar={character:'fox',hat:'crown',glasses:'round',effect:'stars'};
+
+test('the study type directory describes every supported scholar', async () => {
+  const page = await readFile(new URL('../play.html', import.meta.url), 'utf8');
+  assert.match(page, /<dialog[^>]+id="personality-types-dialog"/);
+  const entries = STUDY_TYPE_GROUPS.flatMap(([,types])=>types);
+  assert.deepEqual(entries.map(([name])=>name).sort(), [...SCHOLARS].sort());
+  assert.ok(entries.every(([,criterion])=>criterion.length>0));
+});
+test('the private radar scales seven days of study and caps scores at 100', () => {
+  const metrics=studyRadar({days:[3600,1800,0,3600,0,0,0].map(seconds=>({seconds})),subjectCount:6});
+  assert.deepEqual(metrics.map(metric=>metric.score),[43,36,83,29,70,100]);
+  assert.deepEqual(studyRadar({days:[]}),[]);
+});
 function database(){
   const records=new Map([['users/me',{displayName:'나',email:'private@example.com',subjects:[]}],['users/friend',{displayName:'친구',email:'secret@example.com',phoneBalanceSeconds:1234}],['users/me/friends/friend',{}]]);
   const snapshot=path=>({exists:records.has(path),data:()=>structuredClone(records.get(path))});
@@ -43,6 +58,20 @@ test('background ownership is enforced and friend statistics use credited record
   db.records.get('users/me').avatar=avatar;db.records.get('users/me').avatarInventory=['character_fox','hat_crown','glasses_round','effect_stars'];
   await assert.rejects(()=>savePlayProfile(db,'me',{avatar:{...avatar,background:'cosmos'}}),{code:'permission-denied'});
   db.records.get('users/me').avatarInventory.push('background_cosmos');await savePlayProfile(db,'me',{avatar:{...avatar,background:'cosmos'}});assert.equal(db.records.get('users/me').avatar.background,'cosmos');
+});
+test('camera-free time appears only in personal study statistics',async()=>{
+  const db=database(),date=new Date(Date.now()+9*3600000).toISOString().slice(0,10);
+  db.records.set('users/friend/stats/summary',{totalSeconds:7200,privateSeconds:900});
+  db.records.set(`users/friend/dailyStats/${date}`,{totalSeconds:1800,privateSeconds:900});
+  const own=await readPlayProfile(db,'friend'),view=await readPlayProfile(db,'me','friend');
+  assert.equal(own.studyStats.totalSeconds,7200);
+  assert.equal(own.studyStats.todaySeconds,1800);
+  assert.equal(view.studyStats.totalSeconds,6300);
+  assert.equal(view.studyStats.todaySeconds,900);
+  assert.equal(view.studyStats.weekSeconds,900);
+  assert.equal(view.studyStats.days[0].seconds,900);
+  assert.equal(view.friendSummary.totalSeconds,6300);
+  assert.equal(view.friendSummary.todaySeconds,900);
 });
 test('personality uses real study records, caches for a week, and allows a new manual result',async()=>{
   const db=database(),now=Date.parse('2026-11-04T08:00:00Z');db.records.set('users/me/dailyStats/2026-11-04',{totalSeconds:3600,subjectSeconds:{math:3600}});let calls=0;

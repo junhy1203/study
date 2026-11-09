@@ -1,6 +1,6 @@
-import {pixelAvatar,accessoryAvatar} from './avatar-renderer.js?v=20261106-accessory1';
+import {pixelAvatar,accessoryAvatar} from './avatar-renderer.js?v=20261107-impact1';
 import {ACCESSORIES} from './avatar-accessories.js?v=20261106-accessory1';
-import {ROOM_EMOTES} from './functions/study-room.js?v=20261106-world4';
+import {ROOM_EMOTES} from './functions/study-room.js?v=20261106-world5';
 
 const NS='http://www.w3.org/2000/svg';
 const make=(tag,attrs,parent)=>{const element=document.createElementNS(NS,tag);for(const [key,value]of Object.entries(attrs))element.setAttribute(key,String(value));parent.append(element);return element;};

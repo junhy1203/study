@@ -1,10 +1,11 @@
 import { authReady, getAuthUser } from './auth.js?v=20261104-1';
-import { getStudyData } from './data.js?v=20261105-shop10';
+import { getStudyData, setLoading } from './data.js?v=20261107-face-meals1';
 import { serverCallable } from './server-client.js?v=20261103-privateui1';
 import { chatHistory, completedAnswer } from './chat-state.js?v=20261021-28';
 import { readCache } from './client-cache.js?v=20261105-shop10';
 import { briefingPeriod } from './functions/briefing-period.js?v=20261022-11';
 import { renderCalendar } from './school-calendar.js?v=20261022-12';
+import { showToast } from './notifications.js?v=20261109-capsule1';
 
 let callable;
 async function client(name) {
@@ -21,7 +22,8 @@ const remoteRequests=new Map();
 async function cachedCall(name, data = {}, ttl = 30*60000, force = false) {
   const {user,profile}=getStudyData();
   const period=briefingPeriod();
-  const key=`${user?.uid}:remote:${name}:${JSON.stringify([profile?.school||null,period.date,name==='getStudyBriefing'?period.id:null,data])}`;
+  const school=name==='getSchoolOverview'||name==='getUpcomingExams'?profile?.school||null:null;
+  const key=`${user?.uid}:remote:${name}:${JSON.stringify([school,period.date,name==='getStudyBriefing'?period.id:null,data])}`;
   const saved=force?undefined:readCache.get(key);
   if(saved!==undefined)return saved;
   if(!force&&name==='getSchoolOverview'&&data.eventsOnly===true){
@@ -36,6 +38,7 @@ async function cachedCall(name, data = {}, ttl = 30*60000, force = false) {
   request.promise=(async()=>{
     try {
       const result=await call(name,force&&name==='getStudyBriefing'?{...data,force:true}:data);
+      if(name==='getSchoolOverview'&&data.mealDate&&result.mealDate!==data.mealDate)throw new Error('선택한 날짜의 급식을 불러오지 못했습니다. 새로고침해 주세요.');
       if(['getSchoolOverview','getUpcomingExams'].includes(name))ttl=Date.parse(`${period.date}T00:00:00+09:00`)+86400000-Date.now();
       // An older automatic request must not overwrite a manual refresh.
       if(remoteRequests.get(key)===request&&!Object.values(result.errors||{}).some(Boolean))readCache.set(key,result,result.expiresAtMs?Math.max(0,result.expiresAtMs-Date.now()):ttl);
@@ -51,12 +54,19 @@ function errorMessage(error) {
   if (error?.code === 'functions/invalid-argument') return '입력 내용을 확인해 주세요.';
   return error?.code ? '불러오지 못했습니다. 잠시 후 다시 시도해 주세요.' : error.message;
 }
-const text = (selector, value) => { for (const element of document.querySelectorAll(selector)) element.textContent = value; };
+const text = (selector, value) => {
+  for (const element of document.querySelectorAll(selector)) {
+    setLoading(element,value==='로딩 중…');
+    element.textContent = value;
+  }
+};
 let owner, generation = 0, schoolKey, schoolState = {status:'idle'}, briefing = {status:'idle'}, messages = [], chatting = false, chatError = '';
 let schoolSelection = null, searching = false;
-const currentSchoolMonth = () => new Date(Date.now()+9*3600000).toISOString().slice(0,7);
+const currentSchoolDate = () => new Date(Date.now()+9*3600000).toISOString().slice(0,10);
+const currentSchoolMonth = () => currentSchoolDate().slice(0,7);
 let calendarMonth = currentSchoolMonth();
 let calendarKey, calendarState = {status:'idle'};
+let mealDate=null, mealState={status:'idle'};
 let selectedSchoolDate=null;
 const schoolRendered = new WeakMap();
 let aiUsage, usageLoading=false, usageError='';
@@ -69,10 +79,11 @@ function renderExams() {
   const exams=data?.exams||[];
   const days=exams.length?Math.round((Date.parse(`${exams[0].date}T00:00:00Z`)-Date.parse(`${data.start}T00:00:00Z`))/86400000):0;
   const nextTypes=exams.filter((exam,index)=>exams.findIndex(other=>other.type===exam.type)===index);
-  text('[data-upcoming-exam]',hint?'미등록':examState.status==='error'?'조회 실패':examState.status!=='ready'?'로딩 중…':data.errors?.events?'확인 필요':exams.length?`${exams[0].type} ${days===0?'D-day':`D-${days}`}`:'일정 없음');
+  text('[data-upcoming-exam]',hint==='로딩 중…'?hint:hint?'미등록':examState.status==='error'?'조회 실패':examState.status!=='ready'?'로딩 중…':data.errors?.events?'확인 필요':exams.length?`${exams[0].type} ${days===0?'D-day':`D-${days}`}`:'일정 없음');
   text('[data-upcoming-exam-details]',hint|| (examState.status==='error'?examState.error:examState.status!=='ready'?'학사일정을 확인하고 있습니다.':data.errors?.events?'학사일정 일부를 불러오지 못했습니다. 새로고침해 주세요.':exams.length?`${nextTypes.map(exam=>`${exam.date} ${exam.name}`).join(' · ')} · 나이스 학사일정`:'앞으로 180일 내 등록된 모의고사·중간·기말 일정이 없습니다.'));
 }
 function status(selector, message, failed = false) {
+  if (selector === '[data-school-status]') { if (message) showToast(message); return; }
   for (const element of document.querySelectorAll(selector)) {element.textContent=message; element.classList.toggle('is-error', failed); element.hidden=!message;}
 }
 function schoolHint() {
@@ -107,7 +118,17 @@ function renderSchool() {
     registration.elements.grade.value = Number(profile.school.grade)<=((/(?:중학교|고등학교)$/.test(profile.school.kind||profile.school.name||''))?3:6)?profile.school.grade:'';
     registration.elements.className.value = profile.school.className;
   }
-  for (const button of document.querySelectorAll('[data-school-refresh]')) button.disabled = !user || schoolState.status==='loading';
+  for (const button of document.querySelectorAll('[data-school-refresh]')) button.disabled = Boolean(hint) || schoolState.status==='loading';
+  const today=currentSchoolDate(), shownMealDate=mealDate??today;
+  const mealInput=document.querySelector('[data-school-meal-date]');
+  if(mealInput){
+    mealInput.disabled=Boolean(hint);
+    if(mealInput.value!==shownMealDate)mealInput.value=shownMealDate;
+    for(const button of document.querySelectorAll('[data-school-meal-step]')){
+      button.disabled=Boolean(hint)||(button.dataset.schoolMealStep==='-1'?shownMealDate<=mealInput.min:shownMealDate>=mealInput.max);
+    }
+  }
+  for(const button of document.querySelectorAll('[data-school-meal-today]'))button.disabled=Boolean(hint)||mealDate===null;
   for (const control of document.querySelectorAll('[data-school-month], [data-school-month-step], [data-school-month-today]')) {
     control.disabled = Boolean(hint) || calendarState.status==='loading';
     if (control.matches('[data-school-month]')) control.value=calendarMonth;
@@ -115,13 +136,14 @@ function renderSchool() {
   if(selectedSchoolDate&&!selectedSchoolDate.startsWith(calendarMonth))selectedSchoolDate=null;
   for(const calendar of document.querySelectorAll('[data-school-calendar]'))renderCalendar(calendar,{
     month:calendarMonth,events:calendarState.status==='ready'&&!calendarState.data.errors?.events?calendarState.data.events||[]:[],
-    selected:selectedSchoolDate,today:new Date(Date.now()+9*3600000).toISOString().slice(0,10),status:calendarState.status,hint,
+    selected:selectedSchoolDate,today,status:calendarState.status,hint,
   });
   for (const container of document.querySelectorAll('[data-school-meals], [data-school-timetable], [data-school-events]')) {
-    const sectionState=container.hasAttribute('data-school-events')?calendarState:schoolState;
+    const sectionState=container.hasAttribute('data-school-events')?calendarState:container.hasAttribute('data-school-meals')&&mealDate?mealState:schoolState;
     const previous=schoolRendered.get(container);
     if(previous?.state===sectionState&&previous.hint===hint)continue;
     schoolRendered.set(container,{state:sectionState,hint});
+    setLoading(container,hint==='로딩 중…'||!hint&&(sectionState.status==='idle'||sectionState.status==='loading'));
     if (hint) {container.textContent=hint; continue;}
     if (sectionState.status==='idle' || sectionState.status==='loading') {container.textContent='로딩 중…'; continue;}
     if (sectionState.status==='error') {container.textContent=sectionState.error; continue;}
@@ -143,7 +165,7 @@ function renderSchool() {
       container.append(list);
     } else if (container.hasAttribute('data-school-meals')) {
       if (data.errors.meals) {container.textContent='급식을 불러오지 못했습니다. 새로고침해 주세요.';continue;}
-      if (!data.meals.length) {container.textContent='오늘 등록된 급식 정보가 없습니다.';continue;}
+      if (!data.meals.length) {container.textContent='선택한 날짜에 등록된 급식 정보가 없습니다.';continue;}
       for (const meal of data.meals) {
         const title=document.createElement('h3'); title.textContent=meal.name;
         const list=document.createElement('ul'); list.className='meal-menu';
@@ -172,14 +194,18 @@ function renderSchool() {
       table.append(body);container.append(table);
     }
   }
-  if (schoolState.data) text('[data-school-date]', schoolState.data.date);
   text('[data-school-calendar-month]', `${calendarMonth.slice(0,4)}년 ${Number(calendarMonth.slice(5,7))}월`);
+}
+function selectMealDate(date) {
+  const next=date===currentSchoolDate()?null:date;
+  if(mealDate===next)return;
+  mealDate=next;mealState={status:'idle'};void sync();
 }
 function renderBriefing() {
   const {ready,user}=getStudyData();
-  text('[data-ai-briefing]', !ready ? '로딩 중…' : !user ? '로그인하면 공부 기록에 맞는 제안을 받을 수 있습니다.' : !user.emailVerified ? '이메일 인증 후 이용할 수 있습니다.' : briefing.status==='ready' ? briefing.text : briefing.status==='error' ? briefing.error : '로딩 중…');
+  text('[data-ai-briefing]', !ready&&!user ? '로딩 중…' : !user ? '로그인하면 공부 기록에 맞는 제안을 받을 수 있습니다.' : !user.emailVerified ? '이메일 인증 후 이용할 수 있습니다.' : briefing.status==='ready' ? briefing.text : briefing.status==='error' ? briefing.error : '로딩 중…');
   for(const button of document.querySelectorAll('[data-briefing-retry]')) {
-    button.hidden=!ready||!user?.emailVerified;
+    button.hidden=!user?.emailVerified;
     button.disabled=briefing.status==='loading';
     button.textContent=briefing.status==='loading'?'브리핑 생성 중…':briefing.status==='error'?'다시 불러오기':'최신 기록으로 새로고침';
   }
@@ -197,7 +223,7 @@ function renderChat() {
   container.replaceChildren();
   if(!messages.length) {
     const empty=document.createElement('p');empty.className='empty-data';
-    empty.textContent=!ready?'로딩 중…':!user?'로그인 후 AI에게 질문해 보세요.':!user.emailVerified?'계정에서 이메일을 인증한 뒤 이용해 주세요.':'궁금한 문제나 공부 계획을 물어보세요.';container.append(empty);
+    empty.textContent=!ready&&!user?'로딩 중…':!user?'로그인 후 AI에게 질문해 보세요.':!user.emailVerified?'계정에서 이메일을 인증한 뒤 이용해 주세요.':'궁금한 문제나 공부 계획을 물어보세요.';container.append(empty);
   }
   for(const message of messages) {
     const row=document.createElement('div');row.className=`message${message.role==='user'?' user':''}`;
@@ -208,23 +234,28 @@ function renderChat() {
   if(chatting) {const loading=document.createElement('p');loading.className='empty-data';loading.textContent='로딩 중…';container.append(loading);}
   if(followLatest)scroller.scrollTop=scroller.scrollHeight;
   status('[data-ai-status]',chatError,Boolean(chatError));
-  text('[data-ai-usage]', !ready?'로딩 중…':!user?'로그인 후 이용할 수 있습니다.':usageError||(!aiUsage?'로딩 중…':`이번 달 ${aiUsage.usedWon.toLocaleString()} / 1,000원 · 오늘 Argon ${aiUsage.argonRemaining}회 남음`));
+  setLoading(container,!ready&&!user);
+  text('[data-ai-usage]', !ready&&!user?'로딩 중…':!user?'로그인 후 이용할 수 있습니다.':usageError||(!aiUsage?'로딩 중…':`이번 달 ${aiUsage.usedWon.toLocaleString()} / 1,000원 · 오늘 Argon ${aiUsage.argonRemaining}회 남음`));
   for(const select of document.querySelectorAll('[data-ai-model]'))select.disabled=chatting;
   for(const option of document.querySelectorAll('[data-ai-model] option[value="gemini-4-argon"]'))option.disabled=aiUsage?.argonRemaining===0;
   for(const select of document.querySelectorAll('[data-ai-model]'))if(aiUsage?.argonRemaining===0&&select.value==='gemini-4-argon'&&!chatting)select.value='gemini-3.8-flash';
 }
 async function sync() {
   const {ready,user,profile}=getStudyData();
-  if(owner!==user?.uid) {owner=user?.uid;generation++;schoolKey=null;calendarKey=null;calendarMonth=currentSchoolMonth();schoolState={status:'idle'};calendarState={status:'idle'};briefing={status:'idle'};briefingKey=null;messages=[];chatting=false;chatError='';schoolSelection=null;aiUsage=null;usageLoading=false;usageError='';}
+  if(owner!==user?.uid) {
+    owner=user?.uid;generation++;schoolKey=null;calendarKey=null;calendarMonth=currentSchoolMonth();schoolState={status:'idle'};calendarState={status:'idle'};
+    mealDate=null;mealState={status:'idle'};forceSchoolRefresh=false;
+    briefing={status:'idle'};briefingKey=null;messages=[];chatting=false;chatError='';schoolSelection=null;aiUsage=null;usageLoading=false;usageError='';
+  }
   const currentBriefingKey=briefingPeriod().id;
   if(briefingKey!==currentBriefingKey){briefingKey=currentBriefingKey;briefing={status:'idle'};}
   const token=generation;
   renderSchool();renderBriefing();renderChat();
-  const examsKey=JSON.stringify([user?.uid,profile?.school||null,new Date(Date.now()+9*3600000).toISOString().slice(0,10)]);
+  const examsKey=JSON.stringify([user?.uid,profile?.school||null,currentSchoolDate()]);
   if(examKey!==examsKey){examKey=examsKey;examState={status:'idle'};}
   renderExams();
-  if(!ready||!user)return;
-  if(document.querySelector('[data-upcoming-exam]')&&profile?.school&&examState.status==='idle') {
+  if(!user)return;
+  if(ready&&document.querySelector('[data-upcoming-exam]')&&profile?.school&&examState.status==='idle') {
     examState={status:'loading'};renderExams();
     void cachedCall('getUpcomingExams',{},6*3600000).then(data=>{if(token===generation&&examKey===examsKey){examState={status:'ready',data};renderExams();}}).catch(error=>{if(token===generation&&examKey===examsKey){examState={status:'error',error:errorMessage(error)};renderExams();}});
   }
@@ -232,20 +263,33 @@ async function sync() {
     usageLoading=true;
     void cachedCall('getAiUsage',{},2*60000).then(data=>{if(token===generation){aiUsage=data;usageLoading=false;renderChat();}}).catch(error=>{if(token===generation){usageError=errorMessage(error);usageLoading=false;text('[data-ai-usage]',usageError);}});
   }
-  const key=JSON.stringify([profile?.school||null,currentSchoolMonth(),new Date(Date.now()+9*3600000).toISOString().slice(0,10)]);
+  const key=JSON.stringify([profile?.school||null,currentSchoolDate()]);
   const monthKey=JSON.stringify([key,calendarMonth]);
-  if(document.querySelector('[data-school-meals]')&&schoolKey!==key) {
+  const onSchoolPage=ready&&document.querySelector('[data-school-meals]');
+  let force=false;
+  if(onSchoolPage&&schoolKey!==key) {
     schoolKey=key;
     if(profile?.school) {
       calendarKey=monthKey;calendarState={status:'loading'};
       schoolState={status:'loading'};renderSchool();
-      const force=forceSchoolRefresh;forceSchoolRefresh=false;
+      force=forceSchoolRefresh;forceSchoolRefresh=false;
       void cachedCall('getSchoolOverview',{month:calendarMonth},30*60000,force).then(data=>{if(token===generation&&schoolKey===key){schoolState={status:'ready',data};if(calendarKey===monthKey)calendarState={status:'ready',data};renderSchool();}}).catch(error=>{if(token===generation&&schoolKey===key){schoolState={status:'error',error:errorMessage(error)};if(calendarKey===monthKey)calendarState={status:'error',error:errorMessage(error)};renderSchool();}});
     }
   }
-  if(document.querySelector('[data-school-meals]')&&profile?.school&&calendarKey!==monthKey) {
+  if(onSchoolPage&&profile?.school&&calendarKey!==monthKey) {
     calendarKey=monthKey;calendarState={status:'loading'};renderSchool();
     void cachedCall('getSchoolOverview',{month:calendarMonth,eventsOnly:true}).then(data=>{if(token===generation&&schoolKey===key&&calendarKey===monthKey){calendarState={status:'ready',data};renderSchool();}}).catch(error=>{if(token===generation&&schoolKey===key&&calendarKey===monthKey){calendarState={status:'error',error:errorMessage(error)};renderSchool();}});
+  }
+  if(onSchoolPage&&profile?.school&&mealDate){
+    const date=mealDate, mealKey=JSON.stringify([key,date]);
+    if(force||mealState.key!==mealKey){
+      const request=mealState={key:mealKey,status:'loading'};renderSchool();
+      void cachedCall('getSchoolOverview',{mealDate:date},30*60000,force).then(data=>{
+        if(mealState===request){mealState={key:mealKey,status:'ready',data};renderSchool();}
+      }).catch(error=>{
+        if(mealState===request){mealState={key:mealKey,status:'error',error:errorMessage(error)};renderSchool();}
+      });
+    }
   }
   if(document.querySelector('[data-ai-briefing]')&&user.emailVerified&&briefing.status==='idle') {
     const force=briefing.force===true,periodKey=briefingKey;
@@ -299,11 +343,22 @@ document.addEventListener('submit',async event=>{
   }
 });
 document.addEventListener('change',event=>{
+  if(event.target.matches('[data-school-meal-date]')&&!event.target.disabled){
+    if(event.target.validity.valid)selectMealDate(event.target.value);
+    else event.target.value=mealDate??currentSchoolDate();
+  }
   if(event.target.matches('[data-school-month]')&&event.target.validity.valid&&/^20\d{2}-(0[1-9]|1[0-2])$/.test(event.target.value)) {
     calendarMonth=event.target.value;void sync();
   }
 });
 document.addEventListener('click',event=>{
+  const mealStep=event.target.closest('[data-school-meal-step]');
+  if(mealStep&&!mealStep.disabled){
+    const date=new Date(`${mealDate??currentSchoolDate()}T00:00:00Z`);
+    date.setUTCDate(date.getUTCDate()+Number(mealStep.dataset.schoolMealStep));
+    selectMealDate(date.toISOString().slice(0,10));
+  }
+  if(event.target.closest('[data-school-meal-today]:not(:disabled)'))selectMealDate(currentSchoolDate());
   const calendarDay=event.target.closest('[data-school-calendar-day]');
   if(calendarDay&&!calendarDay.disabled){selectedSchoolDate=calendarDay.dataset.schoolCalendarDay;for(const node of document.querySelectorAll('[data-school-events]'))schoolRendered.delete(node);renderSchool();}
   if(event.target.closest('[data-school-calendar-all]')){selectedSchoolDate=null;for(const node of document.querySelectorAll('[data-school-events]'))schoolRendered.delete(node);renderSchool();}
@@ -314,7 +369,7 @@ document.addEventListener('click',event=>{
     if(/^20\d{2}-/.test(next)){calendarMonth=next;void sync();}
   }
   if(event.target.closest('[data-school-month-today]:not(:disabled)')){calendarMonth=currentSchoolMonth();void sync();}
-  if(event.target.closest('[data-school-refresh]')){schoolKey=null;forceSchoolRefresh=true;void sync();}
+  if(event.target.closest('[data-school-refresh]:not(:disabled)')){schoolKey=null;forceSchoolRefresh=true;void sync();}
   if(event.target.closest('[data-briefing-retry]')&&briefing.status!=='loading'){briefing={status:'idle',force:true};void sync();}
 });
 for(const event of ['study:navigated','study:auth-changed','study:data-changed'])window.addEventListener(event,()=>{void sync();});

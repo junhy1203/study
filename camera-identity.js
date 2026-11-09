@@ -1,15 +1,60 @@
 import {createFaceVault} from './face-vault.js?v=20261103-privateui1';
-import {estimatedFaceShape,faceShapeScore,MESH_THRESHOLD} from './face-mesh.js?v=20261103-privateui1';
+import {estimatedFaceShape,faceShapeScore,MESH_THRESHOLD} from './face-mesh.js?v=20261109-turn1';
 import {createFaceScanCollector,validateScanProfile,SCAN_COUNT} from './face-scan.js?v=20261104-1';
+import {VERIFICATION_LIMITS} from './camera-verification.js?v=20261109-pitch1';
+
+function facePosition(face,aspect){
+  const left=face?.[33],right=face?.[263];
+  if(![left?.x,left?.y,right?.x,right?.y].every(Number.isFinite))return null;
+  // A side view shortens the projected eye span. Depth preserves its scale across yaw.
+  const depth=Number.isFinite(left.z)&&Number.isFinite(right.z)?right.z-left.z:0;
+  const size=Math.hypot(right.x-left.x,right.y-left.y,depth);
+  const forehead=face[10],chin=face[152];
+  const lowered=Number.isFinite(forehead?.z)&&Number.isFinite(chin?.z)&&
+    (chin.z-forehead.z)*aspect>Math.hypot((chin.x-forehead.x)*aspect,chin.y-forehead.y)*Math.tan(.28);
+  return size>.01?{x:(left.x+right.x)/2,y:(left.y+right.y)/2,size,lowered}:null;
+}
+
+export function createOwnerFaceTrack(){
+  let owner=null,others=[],overlap=false;
+  function near(previous,next,aspect,allowLowered=false){
+    if(!previous||!next)return false;
+    const scale=next.size/previous.size;
+    const dx=next.x-previous.x,dy=next.y-previous.y,limit=Math.max(.06,previous.size*.9);
+    // Pitch can move the eye midpoint vertically even while the person stays seated.
+    const extra=allowLowered&&(previous.lowered||next.lowered)?previous.size*aspect*.75:0;
+    return scale>=.55&&scale<=1.8&&Math.hypot(dx,Math.max(0,Math.abs(dy)-extra))<=limit;
+  }
+  return {
+    get lowered(){return owner?.lowered===true;},
+    reset(){owner=null;others=[];overlap=false;},
+    remember(faces,index,{compared=false,aspect=1}={}){
+      owner=facePosition(faces[index],aspect);
+      others=faces.map(face=>facePosition(face,aspect)).filter((point,i)=>i!==index&&point);
+      if(compared||faces.length>1)overlap=faces.length>1;
+    },
+    follow(faces,aspect=1){
+      if(overlap&&faces.length===1)return -1;
+      const positions=faces.map(face=>facePosition(face,aspect));
+      const possible=positions.map((point,index)=>near(owner,point,aspect,faces.length===1)?index:-1).filter(index=>index>=0);
+      if(possible.length!==1)return -1;
+      const [index]=possible;
+      return others.some(other=>near(other,positions[index],aspect))?-1:index;
+    },
+  };
+}
+
 export function createScanIdentityMatcher(profile){
   if(profile)validateScanProfile(profile);
+  const samples=profile?.samples.map(sample=>prepareSimilarity(sample,true));
   let votes=[];
   return {get enrolled(){return Boolean(profile);},reset(){votes=[];},
     observeCandidates(candidates,{vote=true}={}){
       let best=null;
       if(profile)for(const [faceIndex,candidate]of candidates.entries()){
+        const descriptor=prepareSimilarity(candidate.values,true);
         for(let offset=0;offset<SCAN_COUNT;offset+=2){
-          const pair=[faceSimilarity(profile.samples[offset],candidate.values,true),faceSimilarity(profile.samples[offset+1],candidate.values,true)];
+          const pair=[faceSimilarity(samples[offset],descriptor,true),faceSimilarity(samples[offset+1],descriptor,true)];
           // Adjacent captures may differ markedly at a deep turn. Let the
           // closest view lead, while retaining support from the second capture.
           const score=.75*Math.max(...pair)+.25*Math.min(...pair);
@@ -35,22 +80,23 @@ const similarity=(a,b)=>a.reduce((sum,value,i)=>sum+value*b[i],0);
 // Provisional operating point: calibrate with genuine/impostor webcam pairs.
 // Cosine similarity is a score, not a probability of identity.
 export const IDENTITY_THRESHOLD=.8;
+function prepareSimilarity(values,dualFull){
+  return {full:normalized(values.slice(0,1024)),light:dualFull&&values.length===2048?normalized(values.slice(1024)):null};
+}
 function faceSimilarity(sample,descriptor,dualFull){
-  const savedFull=normalized(sample.slice(0,1024)),observedFull=normalized(descriptor.slice(0,1024));
-  if(!savedFull||!observedFull)return -1;
-  const full=similarity(savedFull,observedFull);
+  if(!sample.full||!descriptor.full)return -1;
+  const full=similarity(sample.full,descriptor.full);
   // Legacy periocular embeddings are intentionally ignored. A masked input to
   // a whole-face model must never authenticate someone with different features.
   if(!dualFull)return full;
-  if(sample.length!==2048||descriptor.length!==2048)return -1;
-  const savedLight=normalized(sample.slice(1024)),observedLight=normalized(descriptor.slice(1024));
-  if(!savedLight||!observedLight)return -1;
-  const light=similarity(savedLight,observedLight);
+  if(!sample.light||!descriptor.light)return -1;
+  const light=similarity(sample.light,descriptor.light);
   // Lighting-normalized features lead, but cannot rescue an unrelated RGB face.
   return Math.min(.75*light+.25*full,full+.08);
 }
 export function createIdentityMatcher(saved=[],{dualFull=false}={}) {
   const samples=saved.map(normalized).filter(Boolean);let votes=[];
+  const prepared=samples.map(sample=>prepareSimilarity(sample,dualFull));
   return {
     get enrolled(){return [12,20].includes(samples.length);},
     get samples(){return samples.map(row=>[...row]);},
@@ -60,7 +106,8 @@ export function createIdentityMatcher(saved=[],{dualFull=false}={}) {
       let score=-Infinity,faceIndex=-1;
       if([12,20].includes(samples.length))values.forEach((value,index)=>{
         const descriptor=normalized(value);if(!descriptor)return;
-        const scores=samples.map(sample=>faceSimilarity(sample,descriptor,dualFull));
+        const observed=prepareSimilarity(descriptor,dualFull);
+        const scores=prepared.map(sample=>faceSimilarity(sample,observed,dualFull));
         // Require two supporting samples from ONE enrolled pose. Averaging the
         // best three across different poses penalizes genuine side views and
         // lets unrelated isolated matches combine into a passing score.
@@ -179,9 +226,19 @@ export async function createLocalFaceGuard(tf,security,rpc,notify=()=>{},{descri
   const binding=security.ticket?.binding||security.record?.binding;
   if(binding?.schemaVersion!==5)throw new Error('영상 3D 얼굴 등록을 새로 진행해 주세요.');
   const dualFull=true;
-  let matcher=createScanIdentityMatcher(await vault.load()),collector=matcher.enrolled?null:createFaceScanCollector({refineMs:6000});
-  const describer=describerFactory?await describerFactory(MODEL):null;
-  const model=describer?null:await tf.loadGraphModel(MODEL);
+  const loadDescriptor=async()=>{
+    const describer=describerFactory?await describerFactory(MODEL):null;
+    return {describer,model:describer?null:await tf.loadGraphModel(MODEL)};
+  };
+  const [saved,descriptor]=await Promise.allSettled([vault.load(),loadDescriptor()]);
+  if(saved.status==='rejected'||descriptor.status==='rejected'){
+    vault.close();
+    descriptor.value?.describer?.close();
+    descriptor.value?.model?.dispose();
+    throw saved.status==='rejected'?saved.reason:descriptor.reason;
+  }
+  let matcher=createScanIdentityMatcher(saved.value),collector=matcher.enrolled?null:createFaceScanCollector({refineMs:6000});
+  const {describer,model}=descriptor.value;
   // Preserve old enrollment wire formats when connected to an older server.
   const compareEyes=false;
   async function describe(image){
@@ -196,6 +253,8 @@ export async function createLocalFaceGuard(tf,security,rpc,notify=()=>{},{descri
   const canvas=new OffscreenCanvas(224,224),context=canvas.getContext('2d',{willReadFrequently:true});
   let lastCheck=-Infinity,current={matched:false,status:matcher.enrolled?'checking':'enrolling'},closed=false,saving=false,saveError='';
   let pendingSample=null,sampleEpoch=0,sampleError=null,latestPose=null;
+  const ownerTrack=createOwnerFaceTrack();
+  let ownerMissingAt=null;
   const state=()=>({...current,enrolled:matcher.enrolled,checkedAt:lastCheck});
   const progress=(extra={})=>notify({type:'face-progress',state:'ENROLLING',...collector?.status(),...extra});
   const hold=(label,multiple=false)=>{sampleEpoch++;matcher.reset();collector?.observe(null,{time:lastCheck,quality:false,multiple});current={matched:false,status:'quality-hold',label};progress({state:'QUALITY_HOLD',label});return state();};
@@ -213,7 +272,8 @@ export async function createLocalFaceGuard(tf,security,rpc,notify=()=>{},{descri
   }
   return {
     get enrolling(){return Boolean(collector);},
-    resetVerification(){sampleEpoch++;matcher.reset();current={matched:false,status:matcher.enrolled?'checking':'enrolling'};lastCheck=-Infinity;},
+    discardPendingSample(){sampleEpoch++;},
+    resetVerification(){sampleEpoch++;matcher.reset();ownerTrack.reset();ownerMissingAt=null;current={matched:false,status:matcher.enrolled?'checking':'enrolling'};lastCheck=-Infinity;},
     confirmCapture(){if(closed||saving||!collector)return false;const observed=collector.result();if(!observed.complete)return false;saveCollected(observed);return true;},
     async check(source,result,time){
       if(closed)return {matched:false,status:'locked',enrolled:false};
@@ -221,9 +281,21 @@ export async function createLocalFaceGuard(tf,security,rpc,notify=()=>{},{descri
       // Keep frame replies flowing while storage/KMS requests are pending.
       if(saving)return state();
       if(saveError)return state();
+      const verificationEpoch=sampleEpoch;
       const faces=result.faceLandmarks||[];
-      if(!faces.length||collector&&faces.length>1)return hold(faces.length>1?'화면에 한 사람만 나오게 해 주세요':'얼굴 전체가 카메라에 나오게 해 주세요. 크기와 위치는 자동으로 맞춥니다',faces.length>1);
       const width=source.videoWidth||source.width,height=source.videoHeight||source.height;
+      const aspect=width/height;
+      const checkingContinuity=current.matched;
+      if(checkingContinuity){
+        if(!faces.length){ownerMissingAt??=time;return {...state(),faceIndex:undefined};}
+        const index=ownerTrack.follow(faces,aspect);
+        if(index>=0&&(ownerMissingAt===null||!ownerTrack.lowered&&time-ownerMissingAt<VERIFICATION_LIMITS.away)){
+          ownerMissingAt=null;
+          ownerTrack.remember(faces,index,{aspect});
+          return {...state(),faceIndex:index};
+        }
+      }
+      if(!faces.length||collector&&faces.length>1)return hold(faces.length>1?'화면에 한 사람만 나오게 해 주세요':'얼굴 전체가 카메라에 나오게 해 주세요. 크기와 위치는 자동으로 맞춥니다',faces.length>1);
       if(collector&&faces.length===1){
         const face=faces[0],cx=(face[234]?.x+face[454]?.x)/2,cy=(face[10]?.y+face[152]?.y)/2;
         latestPose=enrollmentPose(face,width,height);
@@ -232,9 +304,9 @@ export async function createLocalFaceGuard(tf,security,rpc,notify=()=>{},{descri
       // One immutable sample at a time, while landmarks keep driving the guide.
       if(pendingSample)return state();
       // A face index belongs only to the frame that was actually compared.
-      const cadence=collector?650:current.matched?1600:500;
-      if(time-lastCheck<cadence&&faces.length===1)return {...state(),faceIndex:current.accepted?0:undefined};
-      const vote=time-lastCheck>=cadence;
+      const cadence=collector?650:500;
+      if(!checkingContinuity&&time-lastCheck<cadence&&faces.length===1)return {...state(),faceIndex:current.accepted?0:undefined};
+      const vote=!checkingContinuity&&time-lastCheck>=cadence;
       if(vote)lastCheck=time;
       const candidates=[];let qualityLabel='얼굴 전체가 보이게 하고 너무 멀리 앉지 말아 주세요. 크기와 위치는 자동으로 맞춥니다';
       for(const [faceIndex,face] of faces.entries()){
@@ -256,12 +328,29 @@ export async function createLocalFaceGuard(tf,security,rpc,notify=()=>{},{descri
             activeCollector.trackPose(latestPose);
             current={matched:false,status:'enrolling',progress:observed.progress};
             progress({label:observed.label});saveCollected(observed);
-          })().catch(error=>{if(!closed)sampleError=error;}).finally(()=>{pendingSample=null;});
+          })().catch(error=>{if(!closed&&epoch===sampleEpoch)sampleError=error;}).finally(()=>{pendingSample=null;});
           return state();
         }
         const full=await describe(image),eyes=eyeImage?await describe(eyeImage):null;
+        if(closed||verificationEpoch!==sampleEpoch)return state();
         if(!full||eyeImage&&!eyes)continue;
         candidates.push({values:eyes?normalized([...full,...eyes]):full,shape,faceIndex,framing,pose:enrollmentPose(face,width,height)});
+      }
+      if(checkingContinuity){
+        const match=candidates.length?matcher.observeCandidates(candidates,{vote:false}):null;
+        if(match?.accepted){
+          const index=candidates[match.faceIndex].faceIndex;
+          ownerMissingAt=null;
+          lastCheck=time;
+          ownerTrack.remember(faces,index,{compared:true,aspect});
+          return {...state(),faceIndex:index};
+        }
+        // When the face first reappears, a partial view is not evidence of a replacement.
+        if(ownerMissingAt!==null&&faces.length===1&&!candidates.length)return {...state(),matched:false,faceIndex:undefined};
+        ownerMissingAt=null;
+        matcher.reset();ownerTrack.reset();lastCheck=-Infinity;
+        current={matched:false,status:'checking',ownerLost:true};
+        return state();
       }
       if(!candidates.length)return hold(qualityLabel);
       const values=candidates[0].values;
@@ -277,7 +366,10 @@ export async function createLocalFaceGuard(tf,security,rpc,notify=()=>{},{descri
         }
         const selected=candidates.find(candidate=>candidate.faceIndex===current.faceIndex)||(collector?candidates[0]:null);
         if(selected)notify({type:'face-framing',framing:selected.framing});
-        if(current.matched)notify({type:'face-verified'});
+        if(current.matched){
+          ownerTrack.remember(faces,current.faceIndex,{compared:true,aspect});
+          notify({type:'face-verified'});
+        }
         return state();
     },
     close(){closed=true;sampleEpoch++;describer?.close();collector?.reset();matcher=createScanIdentityMatcher();vault.close();model?.dispose();canvas.width=canvas.height=0;},

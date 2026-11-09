@@ -1,9 +1,9 @@
 import './auth.js?v=20261104-1';
-import './data.js?v=20261105-shop10';
-import './camera.js?v=20261105-turn1';
-import './integrations.js?v=20261103-privateui1';
-import './planning.js?v=20261104-1';
-import './daily-report.js?v=20261103-privateui1';
-import './study-social.js?v=20261105-shop10';
-import './play.js?v=20261106-world5';
+import './data.js?v=20261107-face-meals1';
+import './camera.js?v=20261109-pitch1';
+import './integrations.js?v=20261107-face-meals1';
+import './planning.js?v=20261107-face-meals1';
+import './daily-report.js?v=20261107-face-meals1';
+import './study-social.js?v=20261107-impact1';
+import './play.js?v=20261109-types2';
 import './friend-profile.js?v=20261105-shop10';

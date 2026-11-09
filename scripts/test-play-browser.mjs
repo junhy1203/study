@@ -90,7 +90,15 @@ try{
     assert.ok(await page.locator('.play-avatar-card').evaluate(node=>{const card=node.getBoundingClientRect(),scene=node.querySelector('[data-avatar-preview]').getBoundingClientRect();return Math.abs(card.width-scene.width)<3&&Math.abs(card.height-scene.height)<3&&node.dataset.avatarBackground==='forest';}),'background fills avatar card');
     if(width>=768)assert.ok(await page.locator('.play-dashboard').evaluate(node=>{const left=node.querySelector('.play-avatar-card').getBoundingClientRect(),right=node.querySelector('.play-dashboard-tools').getBoundingClientRect();return right.left>=left.right&&Math.abs(left.top-right.top)<2&&Math.abs(left.width-right.width)<2;}),'tablet and desktop use equal left/right columns');
   }
-  await page.goto(base+'/account.html');await page.evaluate(()=>document.querySelector('#account-settings').showModal());await page.locator('[data-theme-setting]').selectOption('dark');assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');assert.equal(await page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()),'#171e1a');
+  await page.goto(base+'/account.html');await page.evaluate(()=>document.querySelector('#account-settings').showModal());await page.locator('[data-theme-setting]').selectOption('dark');assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');
+  const themeControl=await page.locator('[data-theme-setting]').evaluate(node=>{
+    const {color,backgroundColor}=getComputedStyle(node);
+    const rgb=value=>value.match(/\d+/g).map(Number);
+    const luminance=value=>rgb(value).slice(0,3).map(channel=>channel/255).map(channel=>channel<=.04045?channel/12.92:((channel+.055)/1.055)**2.4).reduce((sum,channel,index)=>sum+channel*[.2126,.7152,.0722][index],0);
+    const [red,green,blue]=rgb(backgroundColor);
+    return {contrast:(luminance(color)+.05)/(luminance(backgroundColor)+.05),neutral:Math.abs(blue-red)<=12&&green<=blue};
+  });
+  assert.ok(themeControl.neutral&&themeControl.contrast>=4.5,'the dark theme setting has readable text on a neutral surface');
   await page.goto(base+'/play.html');assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');await page.locator('[data-avatar-preview] svg').waitFor();await page.screenshot({path:resolve(root,'tmp/features-ui/play-dark.png'),fullPage:true});
   await page.setViewportSize({width:390,height:900});await page.locator('[data-avatar-edit]').click();
   for(const width of [390,820,1280]){await page.setViewportSize({width,height:900});await page.waitForTimeout(100);assert.ok(await page.locator('.avatar-shop-dialog').evaluate((node,width)=>width<768||node.getBoundingClientRect().width>=width-64,width),'tablet and desktop editor uses the available screen width');for(const shelf of await page.locator('.avatar-tier-items').all()){await shelf.evaluate(node=>node.scrollLeft=0);await page.waitForTimeout(60);assert.ok(await shelf.evaluate(node=>{const box=node.getBoundingClientRect(),first=node.firstElementChild.getBoundingClientRect();return first.left>=box.left+7&&first.right<=box.right-5&&node.clientWidth<=node.parentElement.clientWidth+1;}),'first card and its outline are not clipped');}await page.screenshot({path:resolve(root,`tmp/features-ui/shop-wide-${width}.png`)});}await page.setViewportSize({width:390,height:900});

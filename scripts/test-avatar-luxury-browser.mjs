@@ -51,6 +51,10 @@ try{
   for(const [slot,label,count]of [['character','캐릭터',1],['hat','모자',2],['glasses','안경',2],['effect','움직이는 효과',9],['background','배경',2],['accessory','액세서리',5]]){
     await page.getByRole('button',{name:label,exact:true}).click();
     const cards=page.locator('.avatar-studio [data-tier="신화"] .avatar-shop-card');assert.equal(await cards.count(),count,slot);
+    const cost=cards.first().locator('.avatar-shop-cost');
+    assert.match(await cost.textContent(),/시간/);
+    assert.equal(await cards.first().locator('.avatar-shop-owned').isVisible(),true);
+    assert.ok(parseFloat(await cost.evaluate(el=>getComputedStyle(el).fontSize))<16);
     await cards.first().getByRole('button',{name:/장착/}).click();
     assert.equal(await cards.first().getByRole('button',{name:/장착/}).getAttribute('aria-pressed'),'true');
   }

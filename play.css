@@ -1,12 +1,31 @@
-:root[data-theme=dark]{--bg:#171e1a;--paper:#202a23;--text:#e6eee7;--muted:#a3b2a5;--green:#a4d5ac;--sage:#2b3d2f;--border:#3b4b3e;--sand:#3b3528;--lavender:#35303f}
-[data-theme=dark] body{background:#111713}
-[data-theme=dark] :is(input,select,textarea,dialog,.face-enrollment,.face-preview,.camera-focus,.focus-header,.chat-card,.bubble,.character-card){background:var(--paper);color:var(--text);border-color:var(--border)}
-[data-theme=dark] :is(.bottom-nav,.header,.social-dialog,.account-settings,.goal-dialog,.auth-card){background:var(--bg);color:var(--text)}
-[data-theme=dark] :is(.secondary-button,.social-button,.google-button,.primary-button){background:var(--sage);color:var(--text);border-color:var(--border)}
-[data-theme=dark] :is(.tiny,.muted,.member-email,.face-preview-hint,.face-steps,.face-account){color:var(--muted)}
-[data-theme=dark] .bottom-nav a[aria-current=page],[data-theme=dark] .bottom-nav .nav-ai{background:var(--sage);color:var(--green)}
 main[aria-label="플레이"]>.play-profile,main[aria-label="플레이"]>.timer-panel,main[aria-label="플레이"]>.demo-note,main[aria-label="플레이"]>.play-status{grid-column:1/-1}
 .friend-profile-link{border:0;padding:0;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.personality-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:12px}
+.personality-actions .secondary-button{min-width:0;min-height:42px;margin:0;padding:5px 3px;font-size:12px;line-height:1.25;word-break:keep-all;text-align:center}
+.personality-status{margin-top:8px}
+.profile-dialog.personality-types{width:min(780px,calc(100vw - 24px));max-height:min(82dvh,760px);padding:0}
+.personality-types-header{position:sticky;top:0;z-index:1;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:16px;background:var(--paper);border-bottom:1px solid var(--border)}
+.personality-types-header h2{margin:0;font-size:18px}
+.personality-types-header p{margin:6px 0 0;line-height:1.5}
+.personality-types-header button{flex-shrink:0;width:auto;margin:0;padding-inline:12px}
+.personality-types-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,275px),1fr));gap:12px;padding:16px}
+.personality-type-group{min-width:0;padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--sage)}
+.personality-type-group h3{margin:0 0 12px;font-size:14px;color:var(--green)}
+.personality-type+.personality-type{margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+.personality-type h4{margin:0;font-size:14px}
+.personality-type p{margin:4px 0 8px;font-size:12px;line-height:1.5;word-break:keep-all}
+.profile-dialog.personality-radar-dialog{width:min(540px,calc(100vw - 24px))}
+.personality-radar-body{padding:16px}
+.personality-radar-body h3{margin:0 0 6px}
+.personality-radar-body p{margin:0 0 12px}
+.personality-radar{display:block;width:min(100%,350px);height:auto;margin:0 auto;color:var(--green)}
+.personality-radar-grid{fill:none;stroke:var(--border);stroke-width:1}
+.personality-radar-shape{fill:currentColor;fill-opacity:.23;stroke:currentColor;stroke-width:2}
+.personality-radar text{fill:var(--text);font-size:11px;font-weight:650}
+.personality-radar-values{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,140px),1fr));gap:8px;margin:0}
+.personality-radar-values div{padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--sage)}
+.personality-radar-values dt{font-size:12px;font-weight:700}
+.personality-radar-values dd{margin:3px 0 0;font-size:11px}
 @media(max-width:1024px){:root .app{max-width:none;width:100%;margin:0;border:0;border-radius:0}:root .focus-header,:root .focus-content{max-width:none}}
 @media(max-width:767px){:root .bottom-nav{max-width:none;width:100%;border-radius:0}}
 .play-profile{display:grid;justify-items:center;gap:12px}.pixel-avatar{width:144px;height:160px;image-rendering:pixelated;overflow:visible;filter:drop-shadow(0 10px 8px #0002)}

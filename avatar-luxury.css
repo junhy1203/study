@@ -8,14 +8,60 @@
 .avatar-shop-card[data-item-tier=신화] .avatar-shop-price{font-size:14px;white-space:nowrap}
 .avatar-luxury-shimmer{animation:avatar-luxury-color 9s linear infinite;filter:drop-shadow(0 0 .35px #ffe2ff)}
 .avatar-luxury-glint{animation:avatar-luxury-sparkle var(--duration,3.2s) ease-in-out var(--delay,0s) infinite;transform-box:fill-box;transform-origin:center}
-.avatar-luxury-rings{transform-origin:9px 10px;animation:avatar-orbit 24s linear infinite reverse}
-.avatar-luxury-fx .avatar-orbit{animation-duration:18s}
-.avatar-luxury-prismnova .avatar-orbit{animation-duration:13s}
-.avatar-luxury-sharalashower .avatar-orbit{animation:none}
-.avatar-luxury-shower{animation-name:avatar-luxury-shower}
+.avatar-luxury-rings,.avatar-luxury-shock,.avatar-luxury-fx .avatar-orbit{transform-origin:9px 10px}
+.avatar-luxury-rainbowparade .avatar-luxury-rings{animation:luxury-parade-rings 2.8s ease-in-out infinite}
+.avatar-luxury-rainbowparade .avatar-orbit{animation:avatar-orbit 4.2s linear infinite}
+.avatar-luxury-rainbowparade .avatar-luxury-glint{animation-name:luxury-parade-jewels;animation-duration:1.05s}
+.avatar-luxury-sharalashower .avatar-luxury-rings{animation:luxury-shower-trails 1.3s linear infinite}
+.avatar-luxury-sharalashower .avatar-orbit,.avatar-luxury-prismnova .avatar-orbit{animation:none}
+.avatar-luxury-sharalashower .avatar-luxury-glint{animation:luxury-shower-stars 1.3s linear var(--delay) infinite}
+.avatar-luxury-prismnova .avatar-luxury-rings{animation:luxury-nova-collapse 2.55s ease-in-out infinite}
+.avatar-luxury-prismnova .avatar-luxury-glint{animation:luxury-nova-shards 2.55s cubic-bezier(.12,.72,.28,1) var(--delay) infinite}
+.avatar-luxury-shock{animation:luxury-nova-shock 2.55s ease-out infinite}
 @keyframes avatar-luxury-color{to{filter:hue-rotate(360deg) drop-shadow(0 0 .35px #ffe2ff)}}
 @keyframes avatar-luxury-sparkle{0%,100%{opacity:.45;transform:scale(.65) rotate(-12deg)}50%{opacity:1;transform:scale(1.15) rotate(12deg)}}
-@keyframes avatar-luxury-shower{0%{opacity:0;transform:translateY(-3px) scale(.6)}25%,65%{opacity:1}100%{opacity:0;transform:translateY(4px) scale(.35) rotate(65deg)}}
+@keyframes luxury-parade-rings{
+  0%,100%{transform:rotate(-22deg) scale(.94)}
+  26%{transform:rotate(13deg) scale(1.06)}
+  42%{transform:rotate(5deg) scale(.97)}
+  69%{transform:rotate(34deg) scale(1.12)}
+}
+@keyframes luxury-parade-jewels{
+  0%,100%{opacity:.65;transform:translateY(.8px) scale(.74) rotate(0)}
+  33%{opacity:1;transform:translateY(-2px) scale(1.2) rotate(93deg)}
+  70%{opacity:.8;transform:translateY(.4px) scale(.85) rotate(170deg)}
+}
+@keyframes luxury-shower-trails{
+  0%,100%{opacity:0;stroke-dashoffset:10;transform:translate(-2px,-7px)}
+  24%{opacity:.79}
+  69%{opacity:.32;stroke-dashoffset:-10;transform:translate(1.5px,5px)}
+  87%{opacity:0;stroke-dashoffset:-15;transform:translate(2px,8px)}
+}
+@keyframes luxury-shower-stars{
+  0%,100%{opacity:0;transform:translate(-2px,-6px) scale(.38)}
+  29%{opacity:1;transform:translate(0,0) scale(1.05)}
+  58%{opacity:.91;transform:translate(2px,6px) scale(.85) rotate(18deg)}
+  69%{opacity:1;transform:translate(2.9px,8px) scale(1.38,.66) rotate(30deg)}
+  84%{opacity:0;transform:translate(3.6px,10px) scale(.45)}
+}
+@keyframes luxury-nova-collapse{
+  0%,100%{opacity:.65;transform:rotate(0) scale(1)}
+  30%{opacity:.87;transform:rotate(-38deg) scale(.76)}
+  45%{opacity:1;transform:rotate(-66deg) scale(.32)}
+  53%{opacity:1;transform:rotate(11deg) scale(1.14)}
+  70%{opacity:.7;transform:rotate(28deg) scale(1.05)}
+}
+@keyframes luxury-nova-shards{
+  0%,100%{opacity:.63;transform:scale(.58)}
+  42%{opacity:.16;transform:translate(calc(var(--burst-x) * -.85),calc(var(--burst-y) * -.85)) scale(.36)}
+  57%{opacity:1;transform:translate(calc(var(--burst-x) * .55),calc(var(--burst-y) * .55)) scale(1.16)}
+  79%{opacity:0;transform:translate(var(--burst-x),var(--burst-y)) scale(.72) rotate(85deg)}
+}
+@keyframes luxury-nova-shock{
+  0%,45%,100%{opacity:0;transform:scale(.42)}
+  53%{opacity:1;transform:scale(.79)}
+  74%,99%{opacity:0;transform:scale(1.26)}
+}
 [data-avatar-background=rainbowpalace]{
   background-image:
     radial-gradient(ellipse at 20% 89%,#fff0ff 0 18%,transparent 19%),

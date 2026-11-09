@@ -46,6 +46,7 @@ async function browserTransport(refresh=false) {
   let source=await readFile(new URL('../server-client.js',import.meta.url),'utf8');
   source=source.replace(/^import .*from '\.\/auth\.js[^']*';\r?\n/m,`const authReady=Promise.resolve(true);const getAuthUser=()=>({getIdToken:async force=>${refresh?"force?'alice':'bad'":"'alice'"}});\n`);
   source=source.replace(/^import .*from '\.\/backend-config\.js[^']*';\r?\n/m,`const backendConfig={apiBaseUrl:${JSON.stringify(base)}};\n`);
+  source=source.replace(/'\.\/network-errors\.js[^']*'/,`'${new URL('../network-errors.js',import.meta.url).href}'`);
   return import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
 }
 
@@ -111,6 +112,35 @@ test('batched HTTP reads stream a fast result without waiting for a slow result'
     release();let remainder='';for(;;){const chunk=await reader.read();if(chunk.done)break;remainder+=new TextDecoder().decode(chunk.value);}assert.match(remainder,/"index":1/);
   }finally{release();controller.abort();await isolated.close();}
 });
+test('profile watch streams authorized startup reads after the initial profile',async()=>{
+  const profile=db.doc('users/bootstrap-owner');
+  await profile.set({studyRevision:4});
+  await profile.collection('dailyStats').doc('2026-11-07').set({totalSeconds:123});
+  let verified=0;
+  const isolated=createApi({db,allowedOrigins:[],callables:{},verifyToken:async()=>{verified++;return identity('bootstrap-owner');}});
+  await new Promise(resolve=>isolated.server.listen(0,'127.0.0.1',resolve));
+  const controller=new AbortController();
+  try{
+    const response=await fetch(`http://127.0.0.1:${isolated.server.address().port}/api/v1/watch`,{
+      method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer bootstrap-owner'},
+      body:JSON.stringify({kind:'doc',path:profile.path,initialReads:[
+        {kind:'doc',path:`${profile.path}/dailyStats/2026-11-07`},{kind:'doc',path:'users/another-account'},
+      ]}),signal:controller.signal,
+    });
+    const reader=response.body.getReader(),decoder=new TextDecoder();
+    let buffer='';
+    while(buffer.split('\n').length<4){
+      const {value,done}=await reader.read();
+      assert.equal(done,false);
+      buffer+=decoder.decode(value,{stream:true});
+    }
+    const [first,...reads]=buffer.trim().split('\n').map(JSON.parse);
+    assert.equal(first.type,'snapshot');assert.equal(first.initialReads,true);assert.equal(first.data.studyRevision,4);
+    assert.equal(reads.find(row=>row.index===0).value.data.totalSeconds,123);
+    assert.equal(reads.find(row=>row.index===1).error.code,'permission-denied');
+    assert.equal(verified,1);
+  }finally{controller.abort();await isolated.close();}
+});
 test('SP word custom domain passes browser preflight while foreign origins remain blocked',async()=>{
   const preflight=origin=>fetch(base+'/api/v1/rpc/startWordStudy',{method:'OPTIONS',headers:{Origin:origin,'Access-Control-Request-Method':'POST','Access-Control-Request-Headers':'authorization,content-type'}});
   const response=await preflight('https://word.junhyuk.site');
@@ -166,10 +196,45 @@ test('manual study start is exclusive and concurrent finish saves once without f
   assert.equal(finished.filter(row=>!row.alreadyFinished).length,1);
   const wallet=(await db.doc('users/alice/stats/focusTime').get()).data();
   assert.equal(wallet?.earnedSeconds||0,0);assert.ok(finished[0].creditedSeconds>=4);
+  const summary=(await db.doc('users/alice/stats/summary').get()).data();
+  assert.equal(summary.totalSeconds,finished[0].creditedSeconds);
+  assert.equal(summary.privateSeconds,finished[0].creditedSeconds);
 });
 test('unverified accounts cannot start study or use social APIs',async()=>{
   await assert.rejects(rpc('startStudySession','unverified',{subjectId:'english'}),{code:'failed-precondition'});
   await assert.rejects(rpc('getStudySocial','unverified',{}),{code:'failed-precondition'});
+});
+test('unranked camera pauses and resumes without a face signature and credits only private study time',async()=>{
+  const uid='pose-only-study',controllerId=randomUUID(),schoolId='pose-only-school';
+  await rpc('ensureProfile',uid,{displayName:'자세 감지'});
+  await db.doc(`users/${uid}`).update({schoolId});
+  const started=await handlers.startStudySession(req(uid,{subjectId:'other',cameraMode:true,unrankedCamera:true,controllerId}));
+  assert.equal(started.session.verificationType,'manual');
+  assert.equal(started.session.cameraStatus,'paused');
+  assert.equal(started.session.activeSinceMs,null);
+  const sync=(sequence,tracking,extra)=>handlers.syncStudyCamera(req(uid,{sessionId:started.sessionId,controllerId,sequence,tracking,...extra}));
+  await assert.rejects(sync(1,true,{controllerId:randomUUID()}),{code:'permission-denied'});
+  assert.equal((await sync(1,true)).cameraStatus,'tracking');
+  const ref=db.doc(`users/${uid}/sessions/${started.sessionId}`);
+  const now=Math.floor(Date.now()/1000)*1000;
+  await ref.update({startedAt:Timestamp.fromMillis(now-5000),activeSinceMs:now-5000,leaseUntilMs:now+10000});
+  const paused=await sync(2,false,{creditUntilMs:now,unrankedCamera:false});
+  assert.equal(paused.cameraStatus,'paused');
+  assert.equal(paused.session.accumulatedSeconds,5);
+  const resumed=await sync(3,true);
+  assert.equal(resumed.cameraStatus,'tracking');
+  await sync(4,false,{creditUntilMs:resumed.session.activeSinceMs});
+  const finished=await rpc('finishStudySession',uid,{sessionId:started.sessionId});
+  assert.equal(finished.creditedSeconds,5);
+  const [summary,wallet]=await db.getAll(db.doc(`users/${uid}/stats/summary`),db.doc(`users/${uid}/stats/focusTime`));
+  assert.equal(summary.data().totalSeconds,5);
+  assert.equal(summary.data().privateSeconds,5);
+  assert.equal(wallet.exists,false);
+  assert.equal((await ref.get()).data().verificationType,'manual');
+  for(const {week} of paused.session.segments){
+    assert.equal((await db.doc(`leaderboards/${week}/entries/${uid}`).get()).exists,false);
+    assert.equal((await db.doc(`schoolLeaderboards/${schoolId}/weeks/${week}/entries/${uid}`).get()).exists,false);
+  }
 });
 test('friend code and request acceptance update both sides atomically',async()=>{
   const {code}=await rpc('updateStudySocial','bob',{action:'code'});
@@ -199,10 +264,30 @@ test('camera and word handoff preserves mutual exclusion and duplicate event bou
   await rpc('syncStudyCamera',uid,event);assert.equal((await rpc('syncStudyCamera',uid,event)).ignored,true);
   const word=await rpc('startWordStudy',uid,{controllerId:wordController,tracking:true});
   const ref=db.doc(`users/${uid}/sessions/${camera.sessionId}`);
+  const wordRef=db.doc(`users/${uid}/sessions/${word.sessionId}`),profileRef=db.doc(`users/${uid}`);
+  const wordBeat=(sequence,tracking,present=true)=>rpc('syncWordStudy',uid,{sessionId:word.sessionId,controllerId:wordController,sequence,tracking,present});
+  const cameraBeat=async id=>rpc('syncStudyCamera',uid,{...event,sequence:(await ref.get()).data().sequence+1,eventId:id});
   let current=(await ref.get()).data();assert.equal(current.wordPaused,true);assert.equal(current.activeSinceMs,null);
-  await rpc('syncWordStudy',uid,{sessionId:word.sessionId,controllerId:wordController,sequence:1,tracking:false,present:false});
+  const idle=await wordBeat(1,false);
+  assert.ok(idle.session.presenceUntilMs>idle.session.serverNowMs);
+  assert.equal(idle.session.activeSinceMs,null);
   current=(await ref.get()).data();assert.equal(current.wordPaused,false);
-  await rpc('syncStudyCamera',uid,{...event,sequence:current.sequence+1,eventId:'resume-event'});
+  assert.equal((await profileRef.get()).data().wordPresenceUntilMs,null);
+  const resumed=(await cameraBeat('resume-event')).session;
+  assert.notEqual(resumed.activeSinceMs,null);
+  await wordBeat(2,false);
+  current=(await ref.get()).data();
+  assert.equal(current.sequence,resumed.sequence);assert.equal(current.activeSinceMs,resumed.activeSinceMs);
+  const reentered=(await wordBeat(3,true)).session;
+  assert.notEqual(reentered.activeSinceMs,null);
+  current=(await ref.get()).data();
+  assert.equal(current.activeSinceMs,null);assert.equal(current.wordLeaseUntilMs,reentered.leaseUntilMs);
+  assert.equal((await cameraBeat('word-counting-event')).session.activeSinceMs,null);
+  const expiredLease=Date.now()-1;
+  await wordRef.update({leaseUntilMs:expiredLease});await ref.update({wordLeaseUntilMs:expiredLease});
+  assert.ok((await profileRef.get()).data().wordAppUntilMs>Date.now());
+  assert.notEqual((await cameraBeat('word-lease-expired-event')).session.activeSinceMs,null);
+  await wordBeat(4,false,false);
   assert.notEqual((await ref.get()).data().activeSinceMs,null);
   await ref.update({presenceUntilMs:Date.now()-1});await rpc('expireStudySessions',uid,{});
   assert.equal((await ref.get()).data().status,'finished');

@@ -137,15 +137,36 @@ export async function getDocs(ref) {
   const result=revive(await queueRead(ref));
   return {docs:result.docs.map(snapshot)};
 }
-export function onSnapshot(ref,callback,onError=()=>{}) {
+export function onSnapshot(ref,callback,onError=()=>{},{initialReads=[],onInitialRead=()=>{}}={}) {
   const controller=new AbortController();let cancelled=false,retry=1000,timer;
+  const pending=new Set(initialReads.keys());
+  let initialTimer;
+  const finishInitial=()=>{
+    clearTimeout(initialTimer);
+    for(const index of pending)onInitialRead(index);
+    pending.clear();
+  };
   const connect=async()=>{
     try {
-      const response=await request('/api/v1/watch',ref,{signal:controller.signal});
+      const input=pending.size?{...ref,initialReads}:ref;
+      const response=await request('/api/v1/watch',input,{signal:controller.signal});
       retry=1000;
-      for await(const item of readLines(response,controller.signal))if(item.type==='snapshot'&&!cancelled)callback(snapshot(item));
+      for await(const item of readLines(response,controller.signal)){
+        if(cancelled)break;
+        if(item.type==='snapshot'){
+          if(pending.size&&initialTimer===undefined){
+            if(item.initialReads===true)initialTimer=setTimeout(finishInitial,4000);
+            else finishInitial();
+          }
+          callback(snapshot(item));
+        }else if(item.type==='read'&&pending.delete(item.index)){
+          onInitialRead(item.index,item.value);
+          if(!pending.size)clearTimeout(initialTimer);
+        }
+      }
     } catch(cause){if(!cancelled)onError(cause);retry=Math.min(retry*2,30000);}
+    finally{finishInitial();}
     if(!cancelled)timer=setTimeout(connect,retry);
   };
-  void connect();return()=>{cancelled=true;clearTimeout(timer);controller.abort();};
+  void connect();return()=>{cancelled=true;clearTimeout(timer);finishInitial();controller.abort();};
 }

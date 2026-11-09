@@ -125,27 +125,68 @@ test('phone inference failure does not turn a real face into an absent face',()=
     if(at===10000){assert.equal(result.reason,'away');assert.equal(result.tracking,false);assert.equal(result.identityWarning,false);}
   }
 });
+test('phone events cannot advance face evidence, but a new face can confirm at the same boundary',()=>{
+  const face={reliable:true,face:true,phonePolicy:'tracked',identity:{enrolled:true,matched:true},eyesClosed:false};
+  const t=createFocusTracker();
+  const result=(at,extra={})=>t.update({...face,...extra,phoneObservation:observation(at,[])},at);
+  result(0);assert.equal(result(2000).tracking,true);
+  for(const at of [2100,3600,5000,6200])result(at,{eyesClosed:true});
+  const recognized=t.getDebug().verification.recognizedMs;
+  for(const at of [6400,6599,6600]){
+    assert.equal(t.updatePhone(observation(at,[]),at).tracking,true);
+    assert.equal(t.getDebug().verification.recognizedMs,recognized);
+  }
+  assert.equal(result(6600,{eyesClosed:true}).reason,'sleep');
+});
+test('phone events cannot extend a face gap or start return authentication',()=>{
+  const t=createFocusTracker();
+  const face={reliable:true,face:true,phonePolicy:'tracked',identity:{enrolled:true,matched:true}};
+  t.update({...face,phoneObservation:observation(0,[])},0);
+  t.update({...face,phoneObservation:observation(2000,[])},2000);
+  t.update({...face,face:false,phoneObservation:observation(2100,[])},2100);
+  assert.equal(t.updatePhone(observation(3600,[]),3600).verification.required,false);
+  assert.equal(t.update({...face,face:false,phoneObservation:observation(3600,[])},3600).reason,'away');
+  t.updatePhone(observation(5700,[]),5700);
+  assert.equal(t.updatePhone(observation(6601,[]),6601),null);
+});
+test('a new coordinate space cannot inherit confirmed phone boxes',()=>{
+  const t=createFocusTracker();
+  const face={reliable:true,face:true,phonePolicy:'tracked',coordinateScope:1};
+  t.update({...face,phoneObservation:observation(0)},0);
+  assert.equal(t.update({...face,phoneObservation:observation(450)},450).reason,'phone');
+  t.update({...face,coordinateScope:2},500);
+  assert.equal(t.getDebug().phoneState.confirmed,false);
+  assert.equal(t.getDebug().phoneState.trackId,null);
+});
 test('inference emits phone completion independently and preserves capture time and epoch',async()=>{
   const previous=globalThis.OffscreenCanvas;
   globalThis.OffscreenCanvas=class{getContext(){return {drawImage(){},getImageData(){return {width:100,height:100};}};}};
-  let resolveModel;const messages=[];
+  let resolveModel,clock=400,poseCalls=0,handCalls=0;const messages=[];
   const face=Array.from({length:478},()=>({x:.5,y:.5}));face[33]={x:.3,y:.4};face[263]={x:.7,y:.4};
-  const model=result=>({detectForVideo:()=>result,close(){}});
-  const engine=await createCameraInference({FilesetResolver:{forVisionTasks:async()=>({})},FaceLandmarker:{createFromOptions:async()=>model({faceLandmarks:[face]})},PoseLandmarker:{createFromOptions:async()=>model({landmarks:[]})},HandLandmarker:{createFromOptions:async()=>model({landmarks:[]})}},
+  const model=(result,call=()=>{})=>({detectForVideo:()=>{call();return result;},close(){}});
+  const engine=await createCameraInference({FilesetResolver:{forVisionTasks:async()=>({})},FaceLandmarker:{createFromOptions:async()=>model({faceLandmarks:[face]})},PoseLandmarker:{createFromOptions:async()=>model({landmarks:[]},()=>poseCalls++)},HandLandmarker:{createFromOptions:async()=>model({landmarks:[]},()=>handCalls++)}},
     {load:async()=>({detect:()=>new Promise(resolve=>{resolveModel=resolve;}),dispose(){}})},
     {setBackend:async()=>true,ready:async()=>{},getBackend:()=> 'cpu'},undefined,{onPhoneObservation:m=>messages.push(m)});
   try {
-    const result=await engine.detect({width:100,height:100},100,7);
+    const result=await engine.detect({width:100,height:100},100,7,{now:()=>clock,receivedAt:350});
     assert.equal(result.signals.phonePolicy,'tracked');assert.equal(messages.length,0);
+    assert.equal(result.queueMs,300);assert.equal(result.workerReceivedAt,350);
     await new Promise(resolve=>setTimeout(resolve,0));
-    resolveModel([{class:'cell phone',score:.6,bbox:[30,50,12,20]}]);
+    clock=500;resolveModel([{class:'cell phone',score:.6,bbox:[30,50,12,20]}]);
     await new Promise(resolve=>setImmediate(resolve));
     assert.equal(messages.length,1);assert.equal(messages[0].observation.observedAt,100);
-    assert.ok(messages[0].observation.completedAt>=100);assert.equal(messages[0].epoch,7);
+    assert.equal(messages[0].observation.completedAt,500);assert.equal(messages[0].diagnostics.p95,400);
+    assert.equal(messages[0].epoch,7);
     assert.deepEqual(messages[0].observation.candidates[0].box,box);
     await engine.detect({width:100,height:100},500,7);await new Promise(resolve=>setTimeout(resolve,0));
     await engine.detect({width:100,height:100},700,8);
     resolveModel([]);await new Promise(resolve=>setImmediate(resolve));
     assert.equal(messages.length,1,'old epoch completion must be suppressed');
+    assert.equal(poseCalls,3);assert.equal(handCalls,3,'new epoch cannot inherit prior hand or pose');
+    const resized=await engine.detect({width:150,height:100},800,8);
+    assert.notEqual(resized.scope,result.scope);
+    assert.equal(poseCalls,4);assert.equal(handCalls,4,'new dimensions force fresh landmark measurements');
+    await new Promise(resolve=>setTimeout(resolve,0));
+    resolveModel([]);await new Promise(resolve=>setImmediate(resolve));
   }finally{engine.close();if(previous===undefined)delete globalThis.OffscreenCanvas;else globalThis.OffscreenCanvas=previous;}
 });

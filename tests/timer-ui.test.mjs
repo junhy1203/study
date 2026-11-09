@@ -9,7 +9,7 @@ const toastSource=(await readFile(new URL('../notifications.js',import.meta.url)
 const networkSource=(await readFile(new URL('../network-errors.js',import.meta.url),'utf8')).replace(/^export /gm,'');
 // These VM tests isolate the timer transport; real async key proofs are tested in face-security/browser tests.
 const source=networkSource+'\nconst faceStudyAuthorization=()=>({fixture:true});\n'+(await readFile(new URL('../word-time.js',import.meta.url),'utf8')).replace(/^export /gm,'')+'\n'+cacheSource+'\n'+toastSource+'\n'+(await readFile(new URL('../data.js',import.meta.url),'utf8'))
-  .replace(/^import .*;\r?\n/gm,'').replaceAll('await faceStudyAuthorization(','faceStudyAuthorization(').replace('export function getStudyData','function getStudyData').split(/\r?\ntry \{\r?\n  authServices/)[0];
+  .replace(/^import .*;\r?\n/gm,'').replace(/^export /gm,'').replaceAll('await faceStudyAuthorization(','faceStudyAuthorization(').split(/\r?\nasync function initializeStudyData\(/)[0];
 
 test('production import graph creates only one instance of each shared state module',async()=>{
   const versions=new Map(),visited=new Set();
@@ -38,12 +38,13 @@ test('manual study subject picker excludes linked vocabulary while keeping its s
 
 test('page errors stay on their originating page and success messages never occupy inline status',()=>{
   const status={textContent:'',hidden:true,classList:{toggle(){}}};
+  const toasts=[];
   const context=vm.createContext({
     cameraState:()=>({enabled:false,status:'off'}),getAuthUser:()=>({uid:'owner'}),
     document:{querySelector:()=>null,querySelectorAll:selector=>selector==='[data-sync-status]'?[status]:[],addEventListener(){}},
-    window:{location:{pathname:'/study.html'},addEventListener(){},setInterval(){},dispatchEvent(){}},Event:class {},
+    window:{location:{pathname:'/study.html'},addEventListener(){},setInterval(){},dispatchEvent(){}},Event:class {},toasts,
   });
-  vm.runInContext(`${source}\nnotice('저장하지 못했습니다.',true);`,context);
+  vm.runInContext(`${source}\nshowToast=text=>toasts.push(text);notice('저장하지 못했습니다.',true);`,context);
   assert.equal(status.textContent,'저장하지 못했습니다.');assert.equal(status.hidden,false);
   for(const page of ['school','account']) {
     context.window.location.pathname=`/${page}.html`;
@@ -52,6 +53,13 @@ test('page errors stay on their originating page and success messages never occu
   }
   vm.runInContext("notice('닉네임을 저장했습니다.');",context);
   assert.equal(status.textContent,'');assert.equal(status.hidden,true);
+  for(const page of ['study','account']) {
+    context.window.location.pathname=`/${page}.html`;
+    vm.runInContext("noticeError(new TypeError('Load failed'));",context);
+    assert.equal(status.textContent,'');assert.equal(status.hidden,true);
+    assert.match(toasts.at(-1),/^서버 연결이 잠시 끊겼습니다/);
+  }
+  assert.equal(toasts.length,3);
 });
 
 test('weekly goal progress sums Sunday through Saturday daily records including custom subjects',()=>{
@@ -99,9 +107,9 @@ test('subject period change repaints and requests the selected aggregate',()=>{
   period.value='invalid';assert.deepEqual(Array.from(context.keys()),['week']);
 });
 
-test('camera startup errors keep the focus exit enabled and close without saving a nonexistent session',async()=>{
-  const clicks=[],camera={enabled:false,tracking:false,status:'error'};
-  const stop={disabled:true,dataset:{studyAction:'stop'}};
+for(const status of ['error','opening','scanning','paused'])test(`camera startup allows exiting the ${status} screen without saving`,async()=>{
+  const clicks=[],camera={enabled:status!=='error',tracking:false,status,identityPhase:status==='paused'?'failed':null};
+  const stop={disabled:true,dataset:{studyAction:'stop'},closest:selector=>selector==='.camera-focus'?{}:null};
   let stopped=0,closed=0;
   const context=vm.createContext({
     cameraController:'controller',cameraState:()=>camera,getAuthUser:()=>null,
@@ -110,7 +118,7 @@ test('camera startup errors keep the focus exit enabled and close without saving
       addEventListener:(name,handler)=>{if(name==='click')clicks.push(handler);}},
     window:{addEventListener(){},setInterval(){}},
   });
-  vm.runInContext(`${source}\npaintTimer();`,context);
+  vm.runInContext(`${source}\nbusy=cameraStarting=${status!=='error'};paintTimer();`,context);
   assert.equal(stop.disabled,false);
   const event={target:{closest:selector=>selector==='[data-study-action]'?stop:null}};
   for(const click of clicks)await click(event);
@@ -183,19 +191,35 @@ test('failed camera session creation displays the error inside the focus screen'
 });
 
 function cameraStartup(authReady) {
-  const clicks=[],camera={enabled:true,tracking:true,status:'tracking'};
+  const clicks=[],toasts=[],camera={enabled:true,tracking:true,status:'tracking'};
   const button={disabled:false,dataset:{studyAction:'start'},hasAttribute:()=>true};
   const context=vm.createContext({
     authReady,cameraController:'controller',cameraState:()=>camera,getAuthUser:()=>context.user,
     performance:{now:()=>0},openCameraFocus(){},startCamera:async()=>true,
     stopCamera:(message,error)=>{camera.enabled=false;camera.status=error?'error':'off';camera.message=message;},
     document:{querySelectorAll:()=>[],querySelector:()=>null,addEventListener:(name,handler)=>{if(name==='click')clicks.push(handler);}},
-    window:{addEventListener(){},setInterval(){},dispatchEvent(){}},Event:class {},
+    window:{addEventListener(){},setInterval(){},dispatchEvent(){}},Event:class {},toasts,
   });
-  vm.runInContext(`${source}\npaint=()=>{};paintTimer=()=>{};globalThis.saved=0;authServices={auth:{currentUser:{getIdToken:async()=>{}}}};globalThis.preview=()=>previewSession;globalThis.connect=()=>{call=()=>async()=>{saved++;return {data:{}};};resolveDataReady();};globalThis.failConnection=()=>resolveDataReady();`,context);
-  return {context,camera,start:()=>Promise.all(clicks.map(click=>click({target:{closest:selector=>selector==='[data-study-action]'?button:null}})))};
+  vm.runInContext(`${source}\npaint=()=>{};paintTimer=()=>{};showToast=text=>toasts.push(text);globalThis.saved=0;authServices={auth:{currentUser:{getIdToken:async()=>{}}}};globalThis.preview=()=>previewSession;globalThis.connect=()=>{call=()=>async()=>{saved++;return {data:{}};};resolveDataReady();};globalThis.failConnection=()=>resolveDataReady();`,context);
+  return {context,camera,toasts,start:()=>Promise.all(clicks.map(click=>click({target:{closest:selector=>selector==='[data-study-action]'?button:null}})))};
 }
 
+test('giving up ranking keeps the camera focus open and starts posture tracking without face authorization',async()=>{
+  const t=cameraStartup(Promise.resolve(true)),requests=[];
+  t.context.user={uid:'owner',emailVerified:true};t.context.connect();
+  t.camera.unranked=true;
+  t.context.startCamera=async options=>{assert.equal(options.allowUnranked,true);return true;};
+  let closed=false;t.context.closeCameraFocus=async()=>{closed=true;};
+  t.context.recordRequest=(name,data)=>requests.push({name,data});
+  vm.runInContext(`call=name=>async data=>{recordRequest(name,data);return {data:{}};};`,t.context);
+  await t.start();
+  assert.equal(requests.length,1);
+  assert.equal(requests[0].name,'startStudySession');
+  assert.equal(closed,false);
+  assert.equal(requests[0].data.cameraMode,true);
+  assert.equal(requests[0].data.unrankedCamera,true);
+  assert.equal(requests[0].data.faceAuthorization,undefined);
+});
 test('camera start waits for restored login and delayed storage before creating an account session',async()=>{
   let resolveAuth;
   const t=cameraStartup(new Promise(resolve=>{resolveAuth=resolve;}));
@@ -214,20 +238,31 @@ for(const failure of ['auth','storage'])test(`failed ${failure} initialization n
   t.context.user={uid:'owner',emailVerified:true};
   t.context.failConnection();await t.start();
   assert.equal(t.context.preview(),null);assert.equal(t.context.saved,0);
-  assert.equal(t.camera.status,'error');assert.match(t.camera.message,/서버 연결이 잠시 끊겼습니다/);
+  assert.equal(t.camera.status,'error');assert.equal(t.camera.message,'학습을 시작하지 못했습니다.');
+  assert.match(t.toasts.at(-1),/^서버 연결이 잠시 끊겼습니다/);
 });
 
 test('a transient forced token refresh failure can start once using the still-valid cached token',async()=>{
   const t=cameraStartup(Promise.resolve(true));t.context.user={uid:'owner',emailVerified:true};t.context.connect();
   vm.runInContext(`globalThis.tokenAttempts=[];authServices.auth.currentUser.getIdToken=async force=>{tokenAttempts.push(force===true);if(force)throw {code:'auth/network-request-failed',message:'Load failed'};return 'valid-cached-token';};`,t.context);
-  await t.start();assert.equal(t.context.saved,1);assert.deepEqual(Array.from(t.context.tokenAttempts),[true,false]);assert.equal(t.context.preview(),null);
+  let finishFace;
+  t.context.startCamera=({onAccountReady})=>{
+    onAccountReady();
+    return new Promise(resolve=>{finishFace=resolve;});
+  };
+  const pending=t.start();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(Array.from(t.context.tokenAttempts),[true,false]);assert.equal(t.context.saved,0);
+  finishFace(true);await pending;
+  assert.equal(t.context.saved,1);assert.deepEqual(Array.from(t.context.tokenAttempts),[true,false]);assert.equal(t.context.preview(),null);
 });
 
 test('an interrupted study-start reply shows Korean retry guidance instead of raw Load failed',async()=>{
   const t=cameraStartup(Promise.resolve(true));t.context.user={uid:'owner',emailVerified:true};t.context.connect();
   vm.runInContext(`call=()=>async()=>{throw new TypeError('Load failed');};`,t.context);
   await t.start();const message=vm.runInContext('cameraStartError',t.context);
-  assert.match(message,/서버 연결이 잠시 끊겼습니다/);assert.ok(!message.includes('Load failed'));assert.equal(t.context.saved,0);
+  assert.equal(message,'학습을 시작하지 못했습니다.');assert.equal(t.context.saved,0);
+  assert.match(t.toasts.at(-1),/^서버 연결이 잠시 끊겼습니다/);
 });
 
 for(const user of [null,{uid:'owner',emailVerified:false}])test(`resolved ${user?'unverified member':'guest'} can still use camera preview`,async()=>{
@@ -298,11 +333,12 @@ test('a remote word handoff closes this device camera when its active session ch
 test('SP word counting freezes the camera display and menu/idle state releases it',()=>{
   const t=timerUi(0);t.ui.observeSession(t.snapshot(0));t.tick(2000);t.ui.paintTimer();
   assert.equal(t.display.textContent,'00:00:02');
-  t.ui.setProfile({activeSessionId:'camera',wordCameraSessionId:'camera',wordPresenceUntilMs:200000});
+  t.ui.setProfile({activeSessionId:'camera',wordCameraSessionId:'camera',wordAppUntilMs:200000,wordPresenceUntilMs:112000,wordSnapshot:{activeSinceMs:102000,leaseUntilMs:112000}});
   t.ui.paintTimer();assert.match(t.ui.message(t.camera),/SP word 사용 중/);
   t.tick(5000);t.ui.paintTimer();assert.equal(t.display.textContent,'00:00:02');
   t.ui.observeSession(t.snapshot(2,false,2));
-  t.ui.setProfile({activeSessionId:'camera',wordCameraSessionId:'camera',wordPresenceUntilMs:null});
+  t.ui.setProfile({activeSessionId:'camera',wordCameraSessionId:'camera',wordAppUntilMs:200000,wordPresenceUntilMs:200000,wordSnapshot:{activeSinceMs:null,leaseUntilMs:null}});
+  assert.doesNotMatch(t.ui.message(t.camera),/SP word 사용 중/);
   t.ui.observeSession(t.snapshot(2,true,3));t.tick(1000);t.ui.paintTimer();assert.equal(t.display.textContent,'00:00:03');
 });
 
@@ -310,11 +346,11 @@ test('ten seconds without a word response requests camera resumption at the expi
   const t=timerUi(0),requests=[];
   t.configure(async input=>{requests.push(input);return {data:{session:{...t.snapshot(2,requests.length>2,input.sequence),serverNowMs:requests.length===1?100000:requests.length===2?109999:110000}}};},'camera');
   t.ui.observeSession(t.snapshot(2,false));
-  t.ui.setProfile({activeSessionId:'camera',wordCameraSessionId:'camera',wordPresenceUntilMs:110000});
-  await t.ui.syncCamera();assert.equal(requests.length,1);
+  t.ui.setProfile({activeSessionId:'camera',wordCameraSessionId:'camera',wordAppUntilMs:145000,wordPresenceUntilMs:145000,wordSnapshot:{activeSinceMs:100000,leaseUntilMs:110000}});
+  await t.ui.syncCamera();assert.equal(requests.length,1);assert.equal(requests[0].wordPaused,true);
   t.tick(9999);await t.ui.syncCamera();assert.equal(requests.length,2);
   t.tick(1);
-  await t.ui.syncCamera();assert.equal(requests.length,3);
+  await t.ui.syncCamera();assert.equal(requests.length,3);assert.equal(requests[2].wordPaused,false);
   t.tick(1000);t.ui.paintTimer();assert.equal(t.display.textContent,'00:00:03');
   assert.equal(t.camera.enabled,true);assert.equal(t.stops().stopped,0);
 });
@@ -567,12 +603,15 @@ test('camera setup and synchronization use a normal pending state while real fai
   camera.status='scanning';
   vm.runInContext('cameraSyncFailed=true;paintTimer();',context);
   assert.equal(classes.has('camera-pending'),false);assert.equal(classes.has('camera-paused'),true);
-  camera.status='paused';camera.identityPhase='enrolling';
-  vm.runInContext('paintTimer();',context);
+  camera.identityPhase='enrolling';
+  vm.runInContext('cameraSyncFailed=false;paintTimer();',context);
   assert.equal(classes.has('camera-pending'),true);assert.equal(classes.has('camera-paused'),false);
   assert.equal(message.textContent,'얼굴 등록 중…');
   camera.identityPhase='loading';vm.runInContext('paintTimer();',context);
-  assert.equal(message.textContent,'저장된 얼굴 정보 불러오는 중…');
+  assert.equal(message.textContent,'학습 준비 중…');
+  camera.status='paused';camera.identityPhase='enrolling';vm.runInContext('paintTimer();',context);
+  assert.equal(classes.has('camera-paused'),true);
+  assert.equal(message.textContent,'학습 시간 기록 일시정지');
 });
 
 test('normal camera termination shows saving without paused error styling until the server replies',async()=>{
@@ -610,18 +649,17 @@ test('camera pause messages distinguish manual pause, setup, detection failure a
   });
   vm.runInContext(`${source}\nglobalThis.message=cameraTimerMessage;`,context);
   const message=context.message;
-  assert.match(message({manuallyPaused:true}),/사용자가 수동/);
-  assert.match(message({enabled:true,status:'opening'}),/최초 얼굴 인식을 준비/);
-  assert.match(message({enabled:true,status:'scanning',tracking:false}),/최초 얼굴 인식을 준비/);
-  assert.match(message({enabled:true,status:'paused'}),/얼굴 인식에 실패/);
+  assert.equal(message({manuallyPaused:true}),'수동 일시정지');
+  assert.equal(message({enabled:true,status:'opening'}),'학습 준비 중…');
+  assert.equal(message({enabled:true,status:'scanning',tracking:false}),'학습 시간 기록 대기');
+  assert.equal(message({enabled:true,status:'paused'}),'학습 시간 기록 일시정지');
   assert.match(message({enabled:true,status:'error'}),/카메라 인식 오류/);
   assert.match(message({enabled:false,status:'off'}),/카메라가 종료/);
   assert.match(message({enabled:true,status:'tracking',tracking:true}),/동기화/);
-  assert.match(message({enabled:true,status:'paused',message:'카메라 영상 중단 · 일시정지'}),/카메라 영상 중단/);
   context.document.hidden=true;
   assert.match(message({enabled:true,status:'paused'}),/화면을 벗어나/);
   context.document.hidden=false;
   vm.runInContext('cameraSyncFailed=true;',context);
   assert.match(message({enabled:true,status:'tracking'}),/서버 연결/);
-  assert.match(message({manuallyPaused:true}),/사용자가 수동/);
+  assert.equal(message({manuallyPaused:true}),'수동 일시정지');
 });

@@ -43,6 +43,7 @@ export async function prepareSessionFinish(db, transaction, uid, sessionId, expi
     if(camera?.status==='active' && camera.wordSessionId===sessionId)transaction.update(cameraRef,{...checkpointCamera({...camera,startedAtMs:camera.startedAt.toMillis()},now.toMillis(),false),wordSessionId:null,wordLeaseUntilMs:null,wordPaused:false,sequence:(camera.sequence||0)+1,updatedAt:now});
     const segments = checkpoint ? checkpoint.segments : splitStudyInterval(startedMs, endedMs);
     const creditedSeconds = segments.reduce((sum, segment) => sum + segment.seconds, 0);
+    const privateStudy=session.verificationType==='manual';
     const buckets = new Map();
     const weeks = new Map();
     for (const segment of segments) {
@@ -54,12 +55,12 @@ export async function prepareSessionFinish(db, transaction, uid, sessionId, expi
     }
     if(wordSession)settleWordStats(transaction,db,uid,sessionId,session.subjectId,segments,session.settledSegments||[],now);
     for (const [path, seconds] of wordSession?[]:buckets) {
-      transaction.set(db.doc(path), { uid, totalSeconds: FieldValue.increment(seconds), subjectSeconds: { [session.subjectId]: FieldValue.increment(seconds) }, updatedAt: now }, { merge: true });
+      transaction.set(db.doc(path), { uid, totalSeconds: FieldValue.increment(seconds), ...(privateStudy?{privateSeconds:FieldValue.increment(seconds)}:{}), subjectSeconds: { [session.subjectId]: FieldValue.increment(seconds) }, updatedAt: now }, { merge: true });
     }
     if (creditedSeconds > 0) {
       if(session.verificationType==='face-browser')creditFocusTime(transaction, db, uid, sessionId, creditedSeconds, now);
       const streak = advanceStreak(summaryDoc.data() ?? {}, segments.map(segment => segment.date));
-      transaction.set(summaryRef, { uid, totalSeconds: FieldValue.increment(creditedSeconds), sessionCount: FieldValue.increment(1), ...streak, updatedAt: now }, { merge: true });
+      transaction.set(summaryRef, { uid, totalSeconds: FieldValue.increment(creditedSeconds), ...(privateStudy?{privateSeconds:FieldValue.increment(creditedSeconds)}:{}), sessionCount: FieldValue.increment(1), ...streak, updatedAt: now }, { merge: true });
       for (const [week, seconds] of session.verificationType==='face-browser'?weeks:[]) {
         const ranking = { uid, displayName: profile.displayName, totalSeconds: FieldValue.increment(seconds), updatedAt: now };
         transaction.set(db.doc(`leaderboards/${week}/entries/${uid}`), ranking, { merge: true });

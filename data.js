@@ -2,9 +2,9 @@ import { authReady, getAuthUser } from './auth.js?v=20261104-1';
 import {isNetworkFailure,CONNECTION_MESSAGE} from './network-errors.js?v=20261103-privateui1';
 import {wordLiveSeconds} from './word-time.js?v=20261022-1';
 import { readCache, statsRevision } from './client-cache.js?v=20261105-shop10';
-import { showToast } from './notifications.js?v=20261022-18';
-import { cameraController, cameraState, startCamera, stopCamera, openCameraFocus, closeCameraFocus, toggleCameraPause } from './camera.js?v=20261105-turn1';
-import {faceStudyAuthorization} from './face-session.js?v=20261105-turn1';
+import { showToast } from './notifications.js?v=20261109-capsule1';
+import { cameraController, cameraState, startCamera, stopCamera, openCameraFocus, closeCameraFocus, toggleCameraPause } from './camera.js?v=20261109-pitch1';
+import {faceStudyAuthorization} from './face-session.js?v=20261107-face-meals1';
 
 const historicalSubjects = { korean: '국어', math: '수학', english: '영어', science: '과학', social: '사회' };
 function studySubjects() { return {other:'기타',...Object.fromEntries((state.profile?.subjects || []).map(row => [row.id,row.name]))}; }
@@ -41,6 +41,7 @@ let activeUnsubscribe;
 let activeId;
 const dataRequests = new Map();
 let busy = false;
+let cameraStarting = false;
 let cameraStartError = '';
 let finishingSession = false;
 let cameraSyncBusy = false, cameraLastSync = 0, cameraLastTracking = null, cameraSyncId = null, cameraSyncFailed = false;
@@ -141,26 +142,30 @@ export function getStudyData() {
     const pending=wordLiveSeconds(saved,word,'day',today,now);
     week.totalSeconds+=pending;week.subjectSeconds[word.subjectId]=(week.subjectSeconds[word.subjectId]||0)+pending;
   }
-  return {profile:state.profile, ready:authResolved && !state.pending.has('profile'), user:getAuthUser(), stats:{day:liveStats('today'),week,month:liveStats('month')}, loading:new Set(state.pending), failed:new Set(state.failed)};
+  return {profile:state.profile, ready:authResolved && !state.pending.has('profile'), user:getAuthUser(), stats:{day:liveStats('today'),week,month:liveStats('month')}, loading:new Set([...state.pending].filter(statPending)), failed:new Set(state.failed)};
 }
 function updatePreviewTimer() {
   if (!previewSession) return;
   const active = cameraState().tracking && !cameraState().manuallyPaused && !document.hidden;
   if (active && previewSession.activeSince == null) previewSession.activeSince = performance.now();
   if (!active && previewSession.activeSince != null) {
-    previewSession.totalMs += Math.max(0, performance.now() - previewSession.activeSince);
+    previewSession.totalMs += Math.max(0, (cameraState().guardPauseAt??performance.now()) - previewSession.activeSince);
     previewSession.activeSince = null;
   }
 }
 let state = emptyState();
 
 function emptyState() {
-  return { profile: null, today: {}, week: {}, month: {}, summary: {}, focusTime: {}, lastWeek: {}, days: [], ranking: [], schoolRanking: [], ownRanking: null, active: null, notice: '', error: false, pending:new Set(['profile','today','week','month','summary','focusTime','lastWeek','days','ranking','ownRanking']), failed:new Set() };
+  return { profile: null, today: {}, week: {}, month: {}, summary: {}, focusTime: {}, lastWeek: {}, days: [], ranking: [], schoolRanking: [], ownRanking: null, active: null, notice: '', error: false, pending:new Set(['profile','today','week','month','summary','focusTime','lastWeek','days','ranking','ownRanking']), available:new Set(), failed:new Set() };
 }
+function statPending(key) {return state.pending.has(key)&&!state.available.has(key);}
 function notice(text, error = false, transient = !error) {
   state.notice = transient ? '' : text;state.noticePath = window.location?.pathname;state.error = error;
   if (transient && text) showToast(text);
   paint();
+}
+function noticeError(error) {
+  notice(errorText(error), true, isNetworkFailure(error));
 }
 function errorText(error) {
   if(isNetworkFailure(error))return CONNECTION_MESSAGE;
@@ -171,18 +176,27 @@ function errorText(error) {
     'functions/failed-precondition': '계정 화면에서 이메일 인증을 완료한 뒤 돌아와 주세요.',
     'functions/already-exists': '진행 중인 학습 기록이 있습니다. 먼저 종료해 주세요.',
     'functions/not-found': '학습 기록을 찾지 못했습니다. 새로고침해 주세요.',
-    'functions/unavailable': '자체 서버에 연결하지 못했습니다. 서버 프로그램 실행 상태를 확인해 주세요.',
     'functions/internal': '저장 서비스 응답을 받지 못했습니다. 기록 상태를 확인하고 다시 시도해 주세요.',
     'permission-denied': '기록을 읽을 권한이 없습니다. 다시 로그인해 주세요.',
   };
   return messages[error?.code] || '데이터를 불러오거나 저장하지 못했습니다. 인터넷 연결을 확인해 주세요.';
 }
-function textAll(selector, value) { for (const element of document.querySelectorAll(selector)) element.textContent = value; }
+export function setLoading(element, loading) {
+  if(element.dataset?.skeleton)element.setAttribute('aria-busy',String(loading));
+}
+function textAll(selector, value) {
+  for (const element of document.querySelectorAll(selector)) {
+    setLoading(element,value==='로딩 중…');
+    element.textContent = value;
+  }
+}
 
 function paintRanking(container, rows, school = false) {
   container.replaceChildren();
   const key = school ? 'schoolRanking' : 'ranking';
-  if (!authResolved || getAuthUser() && (state.pending.has(key) || school && state.pending.has('profile'))) {
+  const loading=!authResolved || getAuthUser() && (statPending(key) || school && state.pending.has('profile'));
+  setLoading(container,Boolean(loading));
+  if (loading) {
     container.textContent = '로딩 중…'; return;
   }
   if (state.failed.has(key)) { container.textContent = '랭킹을 불러오지 못했습니다. 새로고침해 주세요.'; return; }
@@ -235,7 +249,9 @@ function paintChart(container) {
     container.setAttribute('aria-label', `${periodLabel} 과목별 학습 시간`);
     details?.replaceChildren();
   }
-  if (!authResolved || getAuthUser() && state.pending.has(key)) { container.textContent = '로딩 중…'; return; }
+  const loading=!authResolved || getAuthUser() && statPending(key);
+  setLoading(container,Boolean(loading));
+  if (loading) { container.textContent = '로딩 중…'; return; }
   if (!getAuthUser()) { container.textContent = '로그인하면 공부 기록을 볼 수 있습니다.'; return; }
   if (state.failed.has(key)) { container.textContent = '기록을 불러오지 못했습니다.'; return; }
   const subjectSeconds = isSubjects ? liveStats(key).subjectSeconds || {} : {};
@@ -273,13 +289,13 @@ function paintChart(container) {
 
 function paint() {
   const user = getAuthUser();
-  const value = (key, result) => !authResolved || user && state.pending.has(key) ? '로딩 중…' : !user ? '로그인 필요' : state.failed.has(key) ? '불러오기 실패' : result;
+  const value = (key, result) => !authResolved || user && statPending(key) ? '로딩 중…' : !user ? '로그인 필요' : state.failed.has(key) ? '불러오기 실패' : result;
   for (const key of ['today', 'week', 'month', 'summary']) textAll(`[data-time="${key}"]`, value(key, time(liveStats(key).totalSeconds)));
   textAll('[data-streak]', value('summary', `${state.summary.currentStreak || 0}일`));
   textAll('[data-focus-balance]', value('focusTime', clock(state.focusTime?.balanceSeconds ?? 0)));
   const rank = state.ranking.findIndex(row => row.uid === user?.uid);
   textAll('[data-my-rank]', value('ownRanking', value('ranking', rank >= 0 ? `${rank + 1}위` : state.ownRanking?.totalSeconds ? '50위 밖' : '—')));
-  textAll('[data-data-badge]', value('today', '실시간 기록'));
+  textAll('[data-data-badge]', value('today', state.pending.has('today') ? '최근 저장 기록' : '실시간 기록'));
   const previous = state.lastWeek.totalSeconds || 0;
   textAll('[data-week-comparison]', value('week', value('lastWeek', previous ? `지난주 대비 ${Math.round(((state.week.totalSeconds || 0) - previous) / previous * 100)}%` : '지난주 기록 없음')));
   textAll('[data-school-name]', value('profile', state.profile?.school?.name || '등록된 학교 없음'));
@@ -313,34 +329,38 @@ function applyFocusReceipt(detail){
   focusReceiptEpoch++;
   state.focusTime={...state.focusTime,balanceSeconds:detail.balanceSeconds};
   state.pending.delete('focusTime');state.failed.delete('focusTime');
-  const key=`${uid}:stats:wallet-v3:${dateKey()}:${statsRevision(state.profile,'focusTime')}:${state.profile?.schoolId||''}:focusTime`;
-  readCache.set(key,state.focusTime,15*60000);
+  state.available.add('focusTime');
+  cacheStat(uid,dateKey(),'focusTime','',statsRevision(state.profile,'focusTime'),state.focusTime);
   paint();
 }
 window.addEventListener('study:focus-purchase',event=>applyFocusReceipt(event.detail));
 
 function wordAppInUse() {
-  return Boolean(state.active?.cameraMode && state.profile?.wordCameraSessionId===state.profile?.activeSessionId && Math.max(state.profile?.wordPresenceUntilMs||0,state.profile?.wordAppUntilMs||0)>sessionNow());
+  const profile=state.profile;
+  if (!state.active?.cameraMode || !profile?.wordCameraSessionId || profile.wordCameraSessionId!==profile.activeSessionId) return false;
+  const now=sessionNow();
+  if (profile.wordHandoffUntilMs>now && profile.wordPresenceUntilMs>now) return true;
+  const word=profile.wordSnapshot;
+  return word ? word.activeSinceMs!=null && word.leaseUntilMs>now : profile.wordTracking!==false && profile.wordPresenceUntilMs>now;
 }
 function cameraPageHidden(){return document.hidden;}
 function cameraTimerMessage(camera) {
   if (finishingSession) return '서버에 저장 중…';
-  if(camera.enabled&&camera.identityPhase==='enrolling'&&!camera.manuallyPaused)return '얼굴 등록 중…';
-  if(camera.enabled&&camera.identityPhase==='loading'&&!camera.manuallyPaused)return '저장된 얼굴 정보 불러오는 중…';
-  if (wordAppInUse()) return 'SP word 사용 중 · 얼굴인식 학습시간 일시정지';
-  if (camera.manuallyPaused) return '사용자가 수동으로 일시정지했습니다 · 재개 버튼을 눌러 주세요';
+  if (wordAppInUse()) return 'SP word 사용 중 · 학습 시간 기록 일시정지';
+  if (camera.manuallyPaused) return '수동 일시정지';
   if (cameraSyncFailed) return '서버 연결을 확인하는 중 · 학습 시간 적립 일시정지';
   if (camera.status === 'error') return camera.message || '카메라 인식 오류 · 종료 후 다시 시작해 주세요';
-  if (cameraPageHidden()) return '화면을 벗어나 일시정지했습니다 · 돌아오면 얼굴을 다시 확인합니다';
-  if (camera.status === 'opening') return '최초 얼굴 인식을 준비하는 중 · 카메라 연결 확인';
-  if (camera.status === 'scanning' && !camera.tracking) return camera.message || '최초 얼굴 인식을 준비하는 중 · 카메라를 바라봐 주세요';
-  if (camera.status === 'paused') return camera.message || '얼굴 인식에 실패했습니다 · 얼굴이 인식되면 자동 재개';
-  if (!camera.enabled) return '카메라가 종료되어 일시정지했습니다 · 얼굴 인식을 다시 시작해 주세요';
-  return '얼굴 인식 완료 · 학습 시작을 서버와 동기화하는 중';
+  if (cameraPageHidden()) return camera.unranked?'화면을 벗어나 일시정지했습니다 · 돌아오면 자세 감지를 재개합니다':'화면을 벗어나 일시정지했습니다 · 돌아오면 얼굴을 다시 확인합니다';
+  if (camera.status === 'paused') return '학습 시간 기록 일시정지';
+  if (camera.enabled&&camera.identityPhase==='enrolling') return '얼굴 등록 중…';
+  if (camera.enabled&&camera.identityPhase==='loading') return '학습 준비 중…';
+  if (camera.status === 'opening') return '학습 준비 중…';
+  if (camera.status === 'scanning' && !camera.tracking) return '학습 시간 기록 대기';
+  if (!camera.enabled) return '카메라가 종료되어 일시정지했습니다 · 학습을 다시 시작해 주세요';
+  return camera.unranked?'자세 감지 중 · 학습 시작을 서버와 동기화하는 중':'얼굴 인식 완료 · 학습 시작을 서버와 동기화하는 중';
 }
 
 function cameraTimerPending(camera) {
-  if(camera.enabled&&camera.identityPhase==='enrolling'&&!camera.manuallyPaused)return true;
   return finishingSession || !wordAppInUse() && !camera.manuallyPaused && !cameraSyncFailed && camera.status !== 'error' && !cameraPageHidden() &&
     (['opening', 'scanning'].includes(camera.status) || camera.enabled && camera.status === 'tracking');
 }
@@ -367,8 +387,9 @@ function paintTimer() {
   }
   for (const button of document.querySelectorAll('[data-study-action]')) button.disabled = busy || (button.dataset.studyAction === 'start' ? Boolean(state.profile?.activeSessionId || previewSession || camera.enabled&&!cameraStartError) : !(state.profile?.activeSessionId || previewSession || camera.enabled));
   // The focus window must remain dismissible even after camera startup fails.
-  if (!busy || camera.status === 'opening' && !state.profile?.activeSessionId) for (const button of document.querySelectorAll('.camera-focus [data-study-action="stop"]')) button.disabled = false;
+  if (!busy || cameraStarting && !state.profile?.activeSessionId) for (const button of document.querySelectorAll('.camera-focus [data-study-action="stop"]')) button.disabled = false;
   for (const button of document.querySelectorAll('[data-existing-session]')) button.hidden = !state.profile?.activeSessionId;
+  for (const panel of document.querySelectorAll('[data-unranked-timer]')) panel.hidden = session?.verificationType!=='manual'||session.cameraMode||!state.profile?.activeSessionId;
   for (const selector of document.querySelectorAll('[data-study-subject]')) {
     const choices = Object.fromEntries(Object.entries(studySubjects()).filter(([,name])=>name!=='영단어')), signature = JSON.stringify(choices);
     if (selector.dataset?.subjects !== signature) {
@@ -380,7 +401,8 @@ function paintTimer() {
     selector.disabled = busy || Boolean(state.profile?.activeSessionId || previewSession || camera.enabled);
     if (state.active?.subjectId && Object.hasOwn(choices,state.active.subjectId)) selector.value = state.active.subjectId;
   }
-  textAll('[data-timer-state]', state.profile?.activeSessionId ? isCamera ? running ? '스터디캠 학습 중 · 자동 저장' : cameraTimerMessage(camera) : '학습 중 · 종료 시 자동 저장' : camera.enabled || camera.status === 'error' ? cameraTimerMessage(camera) : '학습 시작 대기');
+  const runningCameraLabel=session?.verificationType==='manual'?'자세 감지로 학습 중 · 개인 기록에 저장':'스터디캠 학습 중 · 자동 저장';
+  textAll('[data-timer-state]', state.profile?.activeSessionId ? isCamera ? running ? runningCameraLabel : cameraTimerMessage(camera) : '학습 중 · 개인 기록에 저장' : camera.enabled || camera.status === 'error' ? cameraTimerMessage(camera) : '학습 시작 대기');
   if (session?.activityMode) textAll('[data-timer-state]', running ? '단어앱에서 영단어 학습 중' : '단어앱 영단어 학습 일시정지');
   if (previewSession) textAll('[data-timer-state]', camera.tracking ? '체험 학습 중 · 계정 기록 저장 안 됨' : cameraTimerMessage(camera));
   if (camera.manuallyPaused&&!session?.activityMode) textAll('[data-timer-state]', cameraTimerMessage(camera));
@@ -411,7 +433,9 @@ async function syncCamera(force = false, wordChanged = false) {
   const desired = !session.cameraMode || cameraState().tracking && !cameraState().manuallyPaused && !cameraPageHidden();
   const tail=cameraTransitions.at(-1);
   if (tail ? tail.tracking!==desired || tail.wordPaused!==wordPaused : desired!==cameraLastTracking || wordChanged) {
-    cameraTransitions.push({sessionId,controllerId:cameraController,clientEpoch:cameraSyncEpoch,eventId:`${cameraSyncEpoch}:${++cameraEventCounter}`,tracking:desired,wordPaused});
+    const pauseAt=cameraState().guardPauseAt;
+    const creditUntilMs=!desired?Math.max(0,sessionNow()-(pauseAt==null?0:Math.max(0,performance.now()-pauseAt))):undefined;
+    cameraTransitions.push({sessionId,controllerId:cameraController,clientEpoch:cameraSyncEpoch,eventId:`${cameraSyncEpoch}:${++cameraEventCounter}`,tracking:desired,wordPaused,...(creditUntilMs!=null?{creditUntilMs}:{})});
   }
   if (cameraSyncBusy) return;
   if (cameraSyncFailed && Date.now() < cameraRetryAt) return;
@@ -427,7 +451,7 @@ async function syncCamera(force = false, wordChanged = false) {
   cameraSyncSequence=Math.max(cameraSyncSequence,sequence);
   try {
     const syncData={...transition,sequence,contractVersion:'2026-10-24'};
-    if(session.cameraMode)syncData.faceAuthorization=await faceStudyAuthorization(syncData);
+    if(session.cameraMode&&session.verificationType!=='manual')syncData.faceAuthorization=await faceStudyAuthorization(syncData);
     const result = await call(session.cameraMode?'syncStudyCamera':'heartbeatStudySession')(syncData);
     if(requestEpoch!==cameraSyncEpoch||state.profile?.activeSessionId!==sessionId)return;
     observeCameraReply(result?.data, sessionId);
@@ -446,6 +470,7 @@ async function syncCamera(force = false, wordChanged = false) {
   } catch (error) {
     if(requestEpoch!==cameraSyncEpoch||state.profile?.activeSessionId!==sessionId)return;
     if(error?.code==='functions/failed-precondition'||error?.code==='functions/not-found'){leaveEndedStudy();return;}
+    if(!cameraSyncFailed&&isNetworkFailure(error))showToast(CONNECTION_MESSAGE);
     cameraSyncFailed = true; cameraPauseAt ??= performance.now();
     cameraRetryAt=Date.now()+Math.min(60000,5000*2**Math.min(cameraSyncFailures++,4));
   }
@@ -457,14 +482,14 @@ async function syncCamera(force = false, wordChanged = false) {
   }
 }
 
-function watch(reference, callback, token, key, onError = () => {}) {
+function watch(reference, callback, token, key, onError, options) {
   const unsubscribe = sdk.onSnapshot(reference, snapshot => {
     if (token !== generation) return;
     callback(snapshot);
     state.pending.delete(key);
     state.failed.delete(key);
     paint();
-  }, error => { if (token === generation) { onError(error); state.pending.delete(key); state.failed.add(key); notice(errorText(error), true); } });
+  }, error => { if (token === generation) { onError(error); state.pending.delete(key); state.failed.add(key); noticeError(error); } }, options);
   subscriptions.push(unsubscribe);
 }
 
@@ -484,12 +509,36 @@ function visibleDataKeys() {
   return keys;
 }
 
-async function loadVisibleData() {
+function statsRef(key,uid,today,schoolId) {
+  const week=monday(today);
+  const paths={today:['dailyStats',today],week:['weeklyStats',week],month:['monthlyStats',today.slice(0,7)],summary:['stats','summary'],focusTime:['stats','focusTime'],lastWeek:['weeklyStats',monday(dateKey(Date.now()-7*86400000))]};
+  if(paths[key])return sdk.doc(db,'users',uid,...paths[key]);
+  if(key==='ownRanking')return sdk.doc(db,'leaderboards',week,'entries',uid);
+  if(key==='days')return sdk.query(sdk.collection(db,'users',uid,'dailyStats'),sdk.orderBy(sdk.documentId()),sdk.startAt(dateKey(Date.now()-6*86400000)),sdk.endAt(today),sdk.limit(7));
+  const path=key==='schoolRanking'?['schoolLeaderboards',schoolId,'weeks',week,'entries']:['leaderboards',week,'entries'];
+  return sdk.query(sdk.collection(db,...path),sdk.orderBy('totalSeconds','desc'),sdk.orderBy('uid'),sdk.limit(50));
+}
+function statsCacheKey(uid,today,key,schoolId) {
+  return `${uid}:stats:v3:${today}:${key}:${key==='schoolRanking'?schoolId:''}`;
+}
+function cacheStat(uid,today,key,schoolId,revision,value) {
+  const ttl=key.includes('Ranking')||key==='ranking'?5*60000:15*60000;
+  readCache.set(statsCacheKey(uid,today,key,schoolId),{revision,value},ttl,86400000);
+}
+function displayStat(key,result,today) {
+  state[key]=result;
+  state.available.add(key);
+  if(key==='days'){
+    state.today=result.find(row=>row.date===today)||{};
+    state.available.add('today');
+  }
+}
+
+async function loadVisibleData(initialReads) {
   if (!sdk || !connectedUid || state.pending.has('profile') || document.hidden) return;
-  const token = generation, uid = connectedUid, today = dateKey(), week = monday(today);
+  const token = generation, uid = connectedUid, today = dateKey();
   const requestedFocusEpoch=focusReceiptEpoch;
   const currentSchoolId=state.profile?.schoolId || '';
-  const paths = {today:['dailyStats',today],week:['weeklyStats',week],month:['monthlyStats',today.slice(0,7)],summary:['stats','summary'],focusTime:['stats','focusTime'],lastWeek:['weeklyStats',monday(dateKey(Date.now()-7*86400000))]};
   const keys=visibleDataKeys();
   let paintQueued=false;
   const paintAvailable=()=>{
@@ -497,42 +546,57 @@ async function loadVisibleData() {
     Promise.resolve().then(()=>{paintQueued=false;if(token===generation)paint();});
   };
   const apply=(key,result)=>{
-    state[key]=result;state.pending.delete(key);state.failed.delete(key);
-    if(key==='days'&&keys.has('today')){
-      state.today=result.find(row=>row.date===today)||{};state.pending.delete('today');state.failed.delete('today');
-    }
+    displayStat(key,result,today);state.pending.delete(key);state.failed.delete(key);
+    if(key==='days'){state.pending.delete('today');state.failed.delete('today');}
     paintAvailable();
   };
   await Promise.all([...keys].filter(key=>key!=='today'||!keys.has('days')).map(async key => {
     const keyRevision=statsRevision(state.profile,key);
-    const cacheKey = `${uid}:stats:${key==='focusTime'?'wallet-v3':'v2'}:${today}:${keyRevision}:${currentSchoolId}:${key}`;
-    const cached = readCache.get(cacheKey);
-    if (cached !== undefined) {apply(key,cached);return;}
-    if (dataRequests.has(cacheKey)) return;
+    const cacheKey=statsCacheKey(uid,today,key,currentSchoolId);
+    const cached=readCache.get(cacheKey);
+    if(cached?.revision===keyRevision){apply(key,cached.value);return;}
+    // Reuse entries written before the revision moved into the cached value.
+    const legacy=readCache.get(`${uid}:stats:${key==='focusTime'?'wallet-v3':'v2'}:${today}:${keyRevision}:${currentSchoolId}:${key}`);
+    if(legacy!==undefined){cacheStat(uid,today,key,currentSchoolId,keyRevision,legacy);apply(key,legacy);return;}
+    if(!state.available.has(key)){
+      const saved=readCache.get(cacheKey,{allowStale:true});
+      if(saved){displayStat(key,saved.value,today);paintAvailable();}
+    }
+    const requestKey=`${cacheKey}:${keyRevision}:${token}`;
+    if (dataRequests.has(requestKey)) return;
+    state.pending.add(key);
+    if(key==='days'&&keys.has('today'))state.pending.add('today');
+    const sameContext=()=>token===generation&&today===dateKey()&&keyRevision===statsRevision(state.profile,key)
+      &&(key!=='schoolRanking'||currentSchoolId===(state.profile?.schoolId||''))&&(key!=='focusTime'||requestedFocusEpoch===focusReceiptEpoch);
     const request = (async () => {
       try {
+        const initial=initialReads?.get(key);
+        const reply=initial?await initial:undefined;
+        if(!sameContext())return;
         let result;
-        if (paths[key]) result = (await sdk.getDoc(sdk.doc(db,'users',uid,...paths[key]))).data() || {};
-        else if (key === 'ownRanking') result = (await sdk.getDoc(sdk.doc(db,'leaderboards',week,'entries',uid))).data() || null;
-        else if (key === 'days') {
-          const rows = await sdk.getDocs(sdk.query(sdk.collection(db,'users',uid,'dailyStats'),sdk.orderBy(sdk.documentId()),sdk.startAt(dateKey(Date.now()-6*86400000)),sdk.endAt(today),sdk.limit(7)));
-          result = rows.docs.map(row => ({...row.data(),date:row.id}));
-        } else {
-          const path = key === 'schoolRanking' ? ['schoolLeaderboards',state.profile.schoolId,'weeks',week,'entries'] : ['leaderboards',week,'entries'];
-          const rows = await sdk.getDocs(sdk.query(sdk.collection(db,...path),sdk.orderBy('totalSeconds','desc'),sdk.orderBy('uid'),sdk.limit(50)));
-          result = rows.docs.map(row => row.data());
+        if(reply){
+          result=reply.docs?reply.docs.map(row=>key==='days'?{...row.data,date:row.id}:row.data):reply.data??(key==='ownRanking'?null:{});
+        }else{
+          const ref=statsRef(key,uid,today,currentSchoolId);
+          if(['days','ranking','schoolRanking'].includes(key)){
+            const rows=await sdk.getDocs(ref);
+            result=rows.docs.map(row=>key==='days'?{...row.data(),date:row.id}:row.data());
+          }else result=(await sdk.getDoc(ref)).data()??(key==='ownRanking'?null:{});
         }
-        if (token !== generation || keyRevision !== statsRevision(state.profile,key) || currentSchoolId !== (state.profile?.schoolId || '') || key==='focusTime'&&requestedFocusEpoch!==focusReceiptEpoch) return;
-        readCache.set(cacheKey,result,key.includes('Ranking') || key === 'ranking' ? 5*60000 : 15*60000);
+        if (!sameContext()) return;
+        cacheStat(uid,today,key,currentSchoolId,keyRevision,result);
         apply(key,result);
       } catch (error) {
-        if (token === generation) {state.pending.delete(key);state.failed.add(key);notice(errorText(error),true);}
-      } finally {dataRequests.delete(cacheKey);}
+        if (sameContext()) {
+          state.pending.delete(key);state.failed.add(key);
+          if(key==='days'&&keys.has('today')){state.pending.delete('today');state.failed.add('today');}
+          noticeError(error);
+        }
+      } finally {dataRequests.delete(requestKey);}
     })();
     dataRequests.set(cacheKey,request);
     await request;
   }));
-  if (token === generation) paint();
 }
 
 async function connectUser() {
@@ -551,6 +615,19 @@ async function connectUser() {
   connectedUid = user?.uid || null;
   accountBadgeRows=[];
   connectedDay = today;
+  const initialReads=new Map(),refs=[],resolvers=[];
+  if(user&&!document.hidden){
+    const keys=visibleDataKeys();
+    for(const key of keys){
+      if(key==='today'&&keys.has('days'))continue;
+      const saved=readCache.get(statsCacheKey(user.uid,today,key,''),{allowStale:true});
+      if(saved)displayStat(key,saved.value,today);
+      if(!readCache.get(statsCacheKey(user.uid,today,key,''))){
+        refs.push(statsRef(key,user.uid,today,''));
+        initialReads.set(key,new Promise(resolve=>resolvers.push(resolve)));
+      }
+    }
+  }
   paint();
   if (!user) return;
   const uid = user.uid;
@@ -563,13 +640,13 @@ async function connectUser() {
     const previousRevision = state.profile?.studyRevision || 0;
     const previousFocusRevision=state.profile?.focusRevision||0;
     const previousSchoolId = state.profile?.schoolId;
-    const previousWordPresence = state.profile?.wordPresenceUntilMs;
+    const wasWordCounting = wordAppInUse();
     const previousWordClock=state.profile?.wordSnapshot?.serverNowMs;
     const profile = snapshot.data() || null;
     if (profile && ((profile.studyRevision || 0) < previousRevision || (profile.focusRevision||0)<previousFocusRevision)) return;
     state.profile = profile;
     if(previousWordClock!==profile?.wordSnapshot?.serverNowMs)wordClock=profile?.wordSnapshot?{serverMs:profile.wordSnapshot.serverNowMs,localMs:performance.now()}:null;
-  if(Boolean(previousWordPresence>Date.now())!==Boolean(profile?.wordPresenceUntilMs>Date.now()))queueMicrotask(()=>{if(token===generation)void syncCamera();});
+    if(wasWordCounting!==wordAppInUse())queueMicrotask(()=>{if(token===generation)void syncCamera();});
     if (state.profile) resolveProfile();
     else if (!creatingProfile) {
       creatingProfile=true;
@@ -587,21 +664,29 @@ async function connectUser() {
       // another tab's active session needs a realtime session listener.
       if (newActive && state.active?.controllerId !== cameraController) activeUnsubscribe = sdk.onSnapshot(sdk.doc(db, 'users', uid, 'sessions', newActive), record => {
         observeActiveSnapshot(record.data()||null,newActive,token);
-      }, error => { if (token === generation) notice(errorText(error), true); });
+      }, error => { if (token === generation) noticeError(error); });
     }
     if (previousRevision !== (state.profile?.studyRevision || 0)) for (const key of visibleDataKeys()) state.pending.add(key);
     if (previousSchoolId !== state.profile?.schoolId) {
-      state.schoolRanking=[];state.failed.delete('schoolRanking');
+      state.schoolRanking=[];state.available.delete('schoolRanking');state.failed.delete('schoolRanking');
       if(state.profile?.schoolId)state.pending.add('schoolRanking');else state.pending.delete('schoolRanking');
     }
     // The watch wrapper marks profile ready after this callback.
-    queueMicrotask(() => { if (token === generation) void loadVisibleData(); });
-  }, token, 'profile', rejectProfile);
-  try { await profileReady; } catch (error) { if (token === generation) notice(errorText(error), true); }
+    const reads=initialReads.size?new Map(initialReads):undefined;
+    initialReads.clear();
+    queueMicrotask(() => { if (token === generation) void loadVisibleData(reads); });
+  }, token, 'profile', rejectProfile, {initialReads:refs,onInitialRead:(index,value)=>resolvers[index](value)});
+  try { await profileReady; } catch (error) { if (token === generation) noticeError(error); }
   if(token===generation&&document.querySelector('[data-account-badges]')){
     try{const result=await call('getAccountBadges')({});if(token===generation){accountBadgeRows=result.data.badges||[];paint();}}
-    catch(error){if(token===generation)notice(errorText(error),true);}
+    catch(error){if(token===generation)noticeError(error);}
   }
+}
+
+async function refreshStudyToken(user) {
+  // Email verification can change before the cached ID token is refreshed.
+  try { await user.getIdToken(true); }
+  catch(error) { if(!isNetworkFailure(error))throw error; await user.getIdToken(); }
 }
 
 document.addEventListener('click', async event => {
@@ -614,8 +699,11 @@ document.addEventListener('click', async event => {
   if(button?.dataset.studyAction==='stop'&&cameraHandoffDisplay&&button.closest?.('.camera-focus')){
     cameraHandoffDisplay=null;await closeCameraFocus();paintTimer();return;
   }
-  if (button?.dataset.studyAction === 'stop' && busy && cameraState().status === 'opening' && !state.profile?.activeSessionId) {
-    stopCamera(); previewSession = null; busy = false; await closeCameraFocus(); paintTimer(); return;
+  if (button?.dataset.studyAction === 'stop' && !button.disabled && button.closest?.('.camera-focus') && cameraStarting && !state.profile?.activeSessionId) {
+    stopCamera();
+    await closeCameraFocus();
+    paintTimer();
+    return;
   }
   if (!button || button.disabled || busy) return;
   const starting = button.dataset.studyAction === 'start';
@@ -628,11 +716,33 @@ document.addEventListener('click', async event => {
   cameraStartError='';
   let startStage='계정 확인';
   paintTimer();
+  let refreshUser,tokenRefresh;
+  const refreshWhileRecognizing=()=>{
+    if(!getAuthUser()?.emailVerified)return;
+    refreshUser=authServices?.auth.currentUser;
+    if(!refreshUser)return;
+    tokenRefresh=refreshStudyToken(refreshUser);
+    // The camera may be cancelled before this promise is awaited.
+    void tokenRefresh.catch(()=>{});
+  };
   try {
     if (cameraStart) {
       cameraHandoffDisplay=null;
       openCameraFocus(button);
-      if (!retryCameraStart&&!await startCamera()) return;
+      if(retryCameraStart)refreshWhileRecognizing();
+      else {
+        cameraStarting = true;
+        try {
+          const result=await startCamera({allowUnranked:true,onAccountReady:refreshWhileRecognizing});
+          if(!result){
+            if(cameraState().status==='off')await closeCameraFocus();
+            return;
+          }
+        } finally {
+          cameraStarting = false;
+        }
+        paintTimer();
+      }
     }
     // A missing user/callable during startup is still loading, not guest mode.
     if (starting && !await authReady) throw { code: 'functions/unavailable' };
@@ -651,15 +761,18 @@ document.addEventListener('click', async event => {
     if (!call) throw { code: 'functions/unavailable' };
     await connectUser();
     await profileReady;
-    // Email verification can change before the cached ID token is refreshed.
-    try{await authServices.auth.currentUser.getIdToken(true);}
-    catch(error){if(!isNetworkFailure(error))throw error;await authServices.auth.currentUser.getIdToken();}
+    const currentUser=authServices.auth.currentUser;
+    await (tokenRefresh&&refreshUser===currentUser?tokenRefresh:refreshStudyToken(currentUser));
     if (starting) {
       const subjectId = document.querySelector('[data-study-subject]')?.value || 'other';
-      const cameraMode = cameraState().enabled;
+      const cameraMode = cameraStart && cameraState().enabled;
+      const unrankedCamera=cameraMode&&cameraState().unranked;
       const startData={subjectId,cameraMode,controllerId:cameraController};
-      startStage='얼굴 인증 서명';
-      if(cameraMode)startData.faceAuthorization=await faceStudyAuthorization(startData);
+      if(unrankedCamera)startData.unrankedCamera=true;
+      if(cameraMode&&!unrankedCamera){
+        startStage='얼굴 인증 서명';
+        startData.faceAuthorization=await faceStudyAuthorization(startData);
+      }
       startStage='학습 시작 요청';
       const result = await call('startStudySession')(startData);
       if (result.data?.session) {
@@ -667,7 +780,7 @@ document.addEventListener('click', async event => {
         observeCameraReply(result.data, result.data.sessionId);
         if (cameraMode) {activeUnsubscribe?.();activeUnsubscribe=undefined;}
       }
-      notice(cameraMode ? '' : '수동 학습을 시작했습니다. 얼굴 확인 보상과 순위에는 반영되지 않습니다.');
+      notice(unrankedCamera?'얼굴 확인 없이 자세 감지로 학습합니다. 학습 시간은 내 기록에 저장됩니다.':'');
     } else {
       finishingSession = true;
       notice('서버에 저장 중…',false,false);
@@ -684,10 +797,12 @@ document.addEventListener('click', async event => {
       await closeCameraFocus();
     }
   } catch (error) {
+    const network = isNetworkFailure(error);
     const message=errorText(error);
-    if(cameraStart&&startStage!=='계정 확인'&&cameraState().enabled&&!state.profile?.activeSessionId)cameraStartError=`${startStage} 실패: ${message}${error?.code?` (${error.code})`:''}`;
-    else if (cameraStart || !starting) stopCamera(message, true);
-    notice(cameraStartError||message, true);
+    const actionFailure = starting ? '학습을 시작하지 못했습니다.' : '학습을 종료하지 못했습니다.';
+    if(cameraStart&&startStage!=='계정 확인'&&cameraState().enabled&&!state.profile?.activeSessionId)cameraStartError=network?actionFailure:`${startStage} 실패: ${message}${error?.code?` (${error.code})`:''}`;
+    else if (cameraStart || !starting) stopCamera(network ? actionFailure : message, true);
+    notice(network ? message : cameraStartError || message, true, network);
   }
   finally { finishingSession = false; busy = false; paintTimer(); void syncCamera(); }
 });
@@ -760,7 +875,7 @@ document.addEventListener('submit', async event => {
     if(authServices.auth.currentUser.displayName!==displayName)await authServices.updateProfile(authServices.auth.currentUser, { displayName });
     window.dispatchEvent(new Event('study:navigated'));
     notice('닉네임을 저장했습니다.');
-  } catch (error) { notice(errorText(error), true); }
+  } catch (error) { noticeError(error); }
   finally { busy = false; button.disabled = false; }
 });
 
@@ -771,7 +886,7 @@ document.addEventListener('visibilitychange', () => {if (!document.hidden) void 
 window.addEventListener('study:camera-changed', () => {
   updatePreviewTimer();
   if (state.active?.cameraMode && state.active.controllerId === cameraController) {
-    if (!cameraState().tracking || cameraState().manuallyPaused || cameraPageHidden()) {cameraPauseAt ??= performance.now();cameraResumeSequence=null;}
+    if (!cameraState().tracking || cameraState().manuallyPaused || cameraPageHidden()) {cameraPauseAt ??= cameraState().guardPauseAt??performance.now();cameraResumeSequence=null;}
     else if (cameraPauseAt != null && cameraResumeSequence == null) cameraResumeSequence=Math.max(cameraSyncSequence,state.active.sequence || 0)+1;
   }
   paintTimer();void syncCamera(true);
@@ -791,14 +906,18 @@ window.setInterval(() => {
   if(state.profile?.wordSnapshot?.activeSinceMs!=null&&!document.hidden)paint();
 }, 1000);
 
-try {
-  authServices = await authReady;
-  if (!authServices) { authResolved = true; state.pending.clear(); notice('서비스를 불러오지 못했습니다. 새로고침해 주세요.', true); }
-  if (authServices) {
+async function initializeStudyData() {
+  try {
+    authServices = await authReady;
+    if (!authServices) {
+      authResolved = true; state.pending.clear(); notice('서비스를 불러오지 못했습니다. 새로고침해 주세요.', true);
+      return;
+    }
     sdk = await import('./server-client.js?v=20261103-privateui1');
     db = null;
     call = name => sdk.serverCallable(name);
     await connectUser();
-  }
-} catch (error) { notice(errorText(error), true); }
-finally { resolveDataReady(); }
+  } catch (error) { noticeError(error); }
+  finally { resolveDataReady(); }
+}
+void initializeStudyData();

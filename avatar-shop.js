@@ -1,6 +1,6 @@
 import {AVATAR_CATALOG,AVATAR_DEFAULT,ownedAvatarItems} from './functions/avatar-catalog.js?v=20261106-luxury1';
-import {pixelAvatar,avatarBackground,avatarItemPreview} from './avatar-renderer.js?v=20261106-luxury1';
-import {CINEMATIC_EFFECTS} from './avatar-cinematic.js?v=20261106-cinematic1';
+import {pixelAvatar,avatarBackground,avatarItemPreview} from './avatar-renderer.js?v=20261107-impact1';
+import {CINEMATIC_EFFECTS} from './avatar-cinematic.js?v=20261107-impact1';
 import {getAuthUser} from './auth.js?v=20261104-1';
 import {studyCall,element as el,serviceError} from './study-api.js?v=20261024-selfhost1';
 import {announceFocusPurchase,focusDuration,isFocusBalanceError,showFocusNotice} from './focus-wallet.js?v=20261105-shop10';
@@ -44,7 +44,7 @@ export function createAvatarEditor(data,{onSave,onPurchase}={}){
   const preview=el('div','avatar-selected-preview');preview.setAttribute('aria-label','선택한 아바타와 배경');
   const bio=el('textarea');bio.maxLength=100;bio.value=data.bio||'';bio.setAttribute('aria-label','한 줄 소개');bio.placeholder='나를 소개하는 한 줄';
   const save=el('button','primary-button','프로필 저장');save.type='submit';
-  const message=(text,error=false)=>{feedback.textContent=text;feedback.hidden=!text;feedback.classList.toggle('is-error',error);};
+  const message=(text)=>{if(text)showFocusNotice(text);};
   function decoratePreview(image,item){
     if(item.slot!=='effect'||!CINEMATIC_EFFECTS[item.value])return image;
     image.setAttribute('role','button');image.setAttribute('tabindex','0');image.setAttribute('aria-label',`${item.name} 크게 보기`);
@@ -53,8 +53,10 @@ export function createAvatarEditor(data,{onSave,onPurchase}={}){
     return image;
   }
   function updateCard(view){
-    const {item,card,action,price}=view,isOwned=owned.has(item.id),equipped=avatar[item.slot]===item.value;
-    card.classList.toggle('is-owned',isOwned);card.classList.toggle('is-equipped',equipped);action.className=isOwned?'avatar-equip':'avatar-item-buy';action.textContent=isOwned?(equipped?'장착 중':'장착'):'구매';action.disabled=busy;action.setAttribute('aria-label',`${item.name} ${isOwned?'장착':'구매'}`);action.setAttribute('aria-pressed',String(equipped));price.textContent=isOwned?'보유 중':focusDuration(item.costSeconds);
+    const {item,card,action,price,ownership}=view,isOwned=owned.has(item.id),equipped=avatar[item.slot]===item.value;
+    card.classList.toggle('is-owned',isOwned);card.classList.toggle('is-equipped',equipped);action.className=isOwned?'avatar-equip':'avatar-item-buy';action.textContent=isOwned?(equipped?'장착 중':'장착'):'구매';action.disabled=busy;action.setAttribute('aria-label',`${item.name} ${isOwned?'장착':'구매'}`);action.setAttribute('aria-pressed',String(equipped));
+    ownership.hidden=!isOwned;
+    price.hidden=isOwned&&item.costSeconds===0;
     const imageKey=['effect','background'].includes(item.slot)?JSON.stringify({...avatar,[item.slot]:item.value}):item.id;
     if(view.imageKey!==imageKey){const next=decoratePreview(avatarItemPreview(item,avatar),item);view.image.replaceWith(next);view.image=next;view.imageKey=imageKey;}
   }
@@ -74,9 +76,11 @@ export function createAvatarEditor(data,{onSave,onPurchase}={}){
       if(slot==='effect'&&CINEMATIC_EFFECTS[item.value])card.dataset.cinematicItem=item.value;
       const image=decoratePreview(avatarItemPreview(item,avatar),item);
       if(slot==='background')avatarBackground(card,{background:item.value});
-      const action=el('button'),price=el('strong','avatar-shop-price');action.type='button';
-      card.append(el('span',`avatar-rarity rarity-${item.tier}`,item.tier),image,el('strong','avatar-shop-name',item.name),price,action);
-      const view={item,card,action,price,image,imageKey:['effect','background'].includes(item.slot)?JSON.stringify({...avatar,[item.slot]:item.value}):item.id};cardViews.set(item.id,view);updateCard(view);
+      const action=el('button'),pricing=el('strong','avatar-shop-price');action.type='button';
+      const ownership=el('span','avatar-shop-owned','보유 중'),price=el('span','avatar-shop-cost',focusDuration(item.costSeconds));
+      pricing.append(ownership,price);
+      card.append(el('span',`avatar-rarity rarity-${item.tier}`,item.tier),image,el('strong','avatar-shop-name',item.name),pricing,action);
+      const view={item,card,action,price,ownership,image,imageKey:['effect','background'].includes(item.slot)?JSON.stringify({...avatar,[item.slot]:item.value}):item.id};cardViews.set(item.id,view);updateCard(view);
       action.onclick=async()=>{
         if(busy||confirming)return;
         if(owned.has(item.id)){avatar[slot]=item.value;refresh();return;}

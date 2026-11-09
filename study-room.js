@@ -1,5 +1,5 @@
-import {createRoomResidents} from './room-residents.js?v=20261106-world4';
-import {ROOM_SIZE,ROOM_THEMES,ROOM_ITEMS,roomFootprint,canPlace,isRoomFree,roomPath,defaultRoom,validateRoom} from './functions/study-room.js?v=20261106-world4';
+import {createRoomResidents} from './room-residents.js?v=20261107-impact1';
+import {ROOM_SIZE,ROOM_THEMES,ROOM_ITEMS,roomFootprint,canPlace,isRoomFree,roomPath,defaultRoom,validateRoom} from './functions/study-room.js?v=20261106-world5';
 
 const NS='http://www.w3.org/2000/svg';
 // Front-facing elevated view: horizontal X, vertical Y, no diagonal floor.

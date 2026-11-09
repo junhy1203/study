@@ -10,6 +10,7 @@ function setup(source,{call=async()=>({revision:1,room:null}),report=false}={}) 
   const context=vm.createContext({Date,Promise,console,JSON,Math,Set,FormData:class{},
     authReady:new Promise(()=>{}),user:{uid:'alice',emailVerified:true},getAuthUser:()=>context.user,
     getStudyData:()=>({ready:true,profile:{uid:context.user?.uid,studyRevision:1}}),
+    setLoading(){},
     studyDate:()=> '2026-10-23',studyCall:call,serviceError:error=>error.message,showToast(){},
     element:()=>({}),el:()=>({}),duration:value=>String(value),roomClock,memberTime,memberStatus,openSocialPanel(){},closeSocialPanel(){},performance:{now:()=>0},setInterval(){},navigator:{},
     window:{addEventListener:(name,handler)=>{events[name]=handler;}},

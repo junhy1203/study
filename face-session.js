@@ -7,13 +7,13 @@ import {SCAN_COUNT} from './face-scan.js?v=20261104-1';
 import {updateScanRing,stopScanRing,scanArrowGuidance} from './face-scan-guide.js?v=20261105-turn1';
 
 let session=null,dialog=null,previousFocus=null,expiryTimer=null,hiddenTimer=null,progressTimer=null,epoch=0,verified=false;
-let phase='SIGNED_OUT',lastProgress=-1,lastProgressAt=0,profileReady=false;
+let phase='SIGNED_OUT',lastProgress=-1,lastProgressAt=0,profileReady=false,rankingCheck=0;
 let channel;
 const element=(tag,text,className)=>{const node=document.createElement(tag);if(text)node.textContent=text;if(className)node.className=className;return node;};
 const invoke=async(name,data)=>{const response=await serverCallable(name) (data);return response.data;};
 const broadcast=()=>{channel??=typeof BroadcastChannel==='function'?new BroadcastChannel('study-face-policy-v1'):null;return channel;};
-function ensureStyle(){if(!document.querySelector('[data-face-style]')){const link=document.createElement('link');link.rel='stylesheet';link.href=new URL('./face-enrollment.css?v=20261105-turn1',import.meta.url).href;link.dataset.faceStyle='';document.head.append(link);}}
-function closeDialog(){clearInterval(progressTimer);progressTimer=null;stopScanRing(dialog?.querySelector('.face-ring'));dialog?.close();dialog?.remove();dialog=null;previousFocus?.focus();previousFocus=null;}
+function ensureStyle(){if(!document.querySelector('[data-face-style]')){const link=document.createElement('link');link.rel='stylesheet';link.href=new URL('./face-enrollment.css?v=20261108-face-dialog2',import.meta.url).href;link.dataset.faceStyle='';document.head.append(link);}}
+function closeDialog(){clearInterval(progressTimer);progressTimer=null;const closing=dialog,focus=previousFocus;dialog=null;previousFocus=null;if(!closing)return;stopScanRing(closing.querySelector('.face-ring'));const finish=()=>{if(closing.open)closing.close();closing.remove();if(!dialog&&focus?.isConnected)focus.focus();};if(!closing.open||matchMedia('(prefers-reduced-motion: reduce)').matches){finish();return;}closing.dataset.closing='';closing.addEventListener('animationend',event=>{if(event.target===closing)finish();},{once:true});setTimeout(finish,250);}
 function setPhase(value,label) {
   phase=value;
   const status=dialog?.querySelector('[data-face-status]');
@@ -22,17 +22,62 @@ function setPhase(value,label) {
   const cancel=dialog?.querySelector('[data-face-cancel]');if(cancel){cancel.disabled=value==='ENROLLMENT_COMMITTING';cancel.hidden=Boolean(session?.ticket);}
   const capture=dialog?.querySelector('[data-face-capture]');if(capture){capture.disabled=value==='ENROLLMENT_COMMITTING'||capture.dataset.capturing==='true';if(['VERIFYING','VERIFIED'].includes(value))capture.hidden=true;}
 }
-function makeDialog({enrolling=false}={}){
+function makeDialog({enrolling=false,choosing=false,deleting=false}={}){
   ensureStyle();closeDialog();previousFocus=document.activeElement;
   dialog=element('dialog',null,'face-enrollment');dialog.setAttribute('aria-labelledby','face-enrollment-title');
-  dialog.append(element('h2',enrolling?'얼굴 등록':'계정 재인증'));dialog.firstChild.id='face-enrollment-title';
-  dialog.append(element('p',enrolling?'정면 확인 → 고개 움직이기 → 등록 완료':'계정 재인증 → 기존 얼굴로 확인 → 학습 시작','face-steps'));
+  const brand=element('div',null,'face-protector-brand');
+  const mark=element('span',null,'face-protector-mark');mark.setAttribute('aria-hidden','true');
+  mark.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 20 6v5c0 4.4-3 7.8-8 10-5-2.2-8-5.6-8-10V6l8-3Z"/><path d="m9 12 2 2 4-4"/></svg>';
+  brand.append(mark,element('span','Fair Protector'),document.createTextNode(' '),element('span','2.1','face-protector-version'));dialog.append(brand);
+  if(choosing){
+    const title=element('h2','학습 방식 선택');title.id='face-enrollment-title';
+    const description=element('p','이 기기에 등록된 얼굴이 없어요. 얼굴을 등록하면 인증된 학습이 랭킹에 반영돼요. 랭킹을 포기하면 스터디캠이 얼굴 본인 확인 없이 자세와 자리 비움 등 학습 상태를 감지해요. 학습 시간은 내 기록에만 저장되고 Focus Time은 적립되지 않아요. 얼굴 등록 전에는 이 기기에서 랭킹이 표시되지 않아요.','face-subtitle');
+    const choices=element('form',null,'face-study-choices');choices.method='dialog';
+    for(const [value,label,style] of [['register','등록하기','face-primary'],['unranked','랭킹 포기하기','face-unranked'],['exit','나가기','']]){
+      const button=element('button',label,style);button.value=value;
+      if(value==='exit')button.dataset.faceCancel='';
+      choices.append(button);
+    }
+    const choiceDialog=dialog;choices.addEventListener('submit',event=>{event.preventDefault();choiceDialog.returnValue=event.submitter?.value||'exit';closeDialog();});choiceDialog.addEventListener('cancel',event=>{event.preventDefault();choiceDialog.returnValue='exit';closeDialog();});
+    dialog.append(title,description,choices);document.body.append(dialog);dialog.showModal();return dialog;
+  }
+  const title=element('h2',enrolling?'안심하고 얼굴 등록':'다시 만나 반가워요');title.id='face-enrollment-title';dialog.append(title);
+  const subtitle=element('p',enrolling?'내 계정으로 공부하는 나를 확인하는 과정이에요.':'오늘의 학습을 시작하기 전에 계정을 확인해 주세요.','face-subtitle');dialog.append(subtitle);
+  const steps=element('ol',null,'face-steps');steps.setAttribute('aria-label','진행 순서');
+  (enrolling?['계정 확인','얼굴 등록','학습 시작']:['계정 확인','얼굴 확인','학습 시작']).forEach((text,index)=>{const step=element('li');step.append(element('span',String(index+1)),document.createTextNode(text));steps.append(step);});dialog.append(steps);
   const account=element('p',getAuthUser()?.email||'','face-account');dialog.append(account);
   const status=element('p','계정을 확인하고 있습니다.');status.dataset.faceStatus='';status.setAttribute('role','status');status.setAttribute('aria-live','polite');dialog.append(status);
+  const privacy=element('p','얼굴 사진·영상·특징값은 서버로 전송하지 않아요.','face-privacy-footer');dialog.append(privacy);
   const cancel=element('button','취소');cancel.type='button';cancel.dataset.faceCancel='';
-  cancel.addEventListener('click',()=>lockFaceSession('얼굴 확인을 취소했습니다.'));
-  dialog.addEventListener('cancel',event=>{event.preventDefault();if(!session?.ticket&&phase!=='ENROLLMENT_COMMITTING')lockFaceSession('얼굴 확인을 취소했습니다.');});
+  if(!deleting){cancel.addEventListener('click',()=>lockFaceSession('얼굴 확인을 취소했습니다.'));
+  dialog.addEventListener('cancel',event=>{event.preventDefault();if(!session?.ticket&&phase!=='ENROLLMENT_COMMITTING')lockFaceSession('얼굴 확인을 취소했습니다.');});}
   dialog.append(cancel);document.body.append(dialog);dialog.showModal();return dialog;
+}
+function askFaceStudyChoice(){
+  const root=makeDialog({choosing:true});
+  return new Promise(resolve=>root.addEventListener('close',()=>{
+    if(dialog===root)closeDialog();
+    resolve(root.returnValue||'exit');
+  },{once:true}));
+}
+const currentProfile=value=>value?.binding?.schemaVersion===FACE_SCHEMA&&value.binding.preprocessVersion===FACE_PREPROCESS;
+function setRankingVisibility(registered){
+  document.documentElement.toggleAttribute('data-face-ranking-ready',registered);
+}
+async function refreshRankingVisibility(){
+  const check=++rankingCheck,uid=getAuthUser()?.uid;
+  setRankingVisibility(false);
+  if(!uid||!globalThis.indexedDB)return;
+  try{
+    const installationId=await faceStore('settings','readonly','installation');
+    if(!installationId||check!==rankingCheck)return;
+    const keys=await faceStore('keys','readonly',`${uid}:${installationId}`);
+    if(!keys?.signingKey||!keys.wrappingKey||check!==rankingCheck)return;
+    const {active}=await invoke('getFaceEnrollmentStatus',{installationId});
+    if(active?.installationId!==installationId)return;
+    const record=await faceStore('profiles','readonly',faceRecordKey(uid,installationId,active.profileId));
+    if(check===rankingCheck&&uid===getAuthUser()?.uid)setRankingVisibility(currentProfile(record)&&record.binding.generation===active.generation);
+  }catch{}
 }
 function addPreview(){
   if(!dialog||dialog.querySelector('.face-preview'))return;
@@ -117,49 +162,68 @@ export function lockFaceSession(reason='얼굴 확인을 다시 시작해 주세
 async function askReauthentication({enrolling,replace,keys,uid,installationId,revoke=false}) {
   const root=dialog||makeDialog({enrolling});
   setPhase('DAILY_REAUTH_REQUIRED',enrolling?'계정을 다시 인증한 뒤 이 브라우저에 얼굴을 등록합니다.':'오늘 첫 학습을 위해 계정을 다시 인증해 주세요.');
-  const description=element('p',enrolling?'사진과 영상은 저장하지 않습니다. 얼굴 비교 정보는 이 브라우저에 암호화해 보관합니다. 사이트 데이터를 삭제하면 복구할 수 없습니다. 일반 웹캠의 얼굴 확인은 실명 확인이나 Face ID 수준의 위조 탐지를 보장하지 않습니다.':'기존 얼굴 등록을 유지하며 오늘의 계정 인증만 갱신합니다.');root.append(description);
+  const description=element('section',null,'face-privacy-card');
+  description.setAttribute('aria-label','얼굴 정보 보호 안내');
+  description.append(element('h3','얼굴 정보 처리 및 이용 안내'));
+  const protections=element('ul');
+  for(const [heading,body] of [
+    ['등록할 때','카메라 영상을 기기에서 실시간으로 분석해 여러 각도의 얼굴 특징과 형태를 추출해요. 사진이나 영상은 저장하지 않고, 비교용 특징값만 이 브라우저의 IndexedDB에 암호화해 보관해요.'],
+    ['얼굴을 확인할 때','스터디캠을 시작하거나 자리를 비웠다가 돌아오면 등록한 특징값과 현재 얼굴을 기기에서 비교해요. 얼굴 특징 비교 기준을 충족하고 형태 유사도도 85% 이상이어야 해요.'],
+    ['이용 범위','저장한 특징값은 스터디캠에서 등록한 사람인지 확인하는 데만 사용해요. 얼굴 사진, 영상, 특징값 모두 서버로 보내지 않아요.'],
+  ]){const row=element('li');row.append(element('strong',heading),element('span',body));protections.append(row);}description.append(protections);
+  const details=element('details',null,'face-privacy-details');details.append(element('summary','보관·삭제 및 서버 처리 정보'));
+  details.append(element('p','재등록하면 새 특징값을 사용하며 암호화된 이전 기록은 브라우저에 남을 수 있어요. 계정 설정에서 얼굴 등록을 삭제하거나 브라우저의 사이트 데이터를 지우면 이 브라우저에 저장된 특징값이 삭제돼요. 다시 이용하려면 얼굴을 등록해야 해요.'));
+  details.append(element('p','서버는 계정 인증, 등록 상태와 암호화 키 보호 정보를 처리해요. 학습 기록에는 세션 정보와 진행·일시정지 상태가 전달돼요.'));
+  details.append(element('p','얼굴 확인이 끝난 뒤에는 기기에서 카메라 영상으로 얼굴이 화면에 있는지와 학습 상태를 살펴요. 등록 특징값과의 비교는 다시 확인이 필요한 시점에만 이뤄져요.'));
+  details.append(element('p','일반 웹캠으로 얼굴을 비교하며 실명 확인이나 사진·영상 등 위조 탐지를 보장하지 않습니다.'));description.append(details);root.append(description);
+  if(!enrolling)description.append(element('p','기존 얼굴 등록은 유지하고 오늘의 계정 인증만 갱신해요.','face-reauth-note'));
   if(enrolling&&replace)root.append(element('p','새 얼굴 등록을 완료하면 기존 활성 등록이 교체됩니다. 새 등록을 취소하면 기존 등록은 유지됩니다. 기존 얼굴과 불일치했다는 이유로 자동 교체하지 않습니다.','face-warning'));
-  const consent=element('label'),checkbox=element('input');checkbox.type='checkbox';consent.append(checkbox,document.createTextNode(enrolling?'안내를 확인했으며 얼굴 비교 정보의 암호화 저장에 동의합니다.':'오늘의 계정 재인증을 진행합니다.'));root.append(consent);
-  const passwordAccount=getAuthUser().providerData.some(row=>row.providerId==='password');
-  const passwordLabel=element('label','비밀번호'),password=element('input');password.type='password';password.autocomplete='current-password';password.setAttribute('aria-label','계정 비밀번호');if(passwordAccount)root.append(passwordLabel,password);
-  const button=element('button',passwordAccount?'계정 인증':'Google 계정으로 다시 인증');button.type='button';root.append(button);
-  root.append(root.querySelector('[data-face-cancel]'));
+  const consent=element('label',null,'face-consent'),checkbox=element('input');checkbox.type='checkbox';checkbox.required=true;consent.append(checkbox,element('span',enrolling?'얼굴 정보 처리 안내를 확인했고, 이 브라우저에 얼굴 비교 정보를 암호화해 저장하는 데 동의해요.':'안내를 확인했고, 오늘의 계정 재인증을 진행할게요.'));root.append(consent);
+  const button=element('button','Google로 로그인','face-primary');button.type='button';root.append(button);
+  root.append(root.querySelector('.face-privacy-footer'),root.querySelector('[data-face-cancel]'));
   const attempt=epoch;
   return new Promise((resolve,reject)=>{
-    const cancelled=()=>{password.value='';window.removeEventListener('study:face-locked',cancelled);reject(new Error('얼굴 확인을 취소했습니다.'));};
+    const cancelled=()=>{window.removeEventListener('study:face-locked',cancelled);reject(new Error('얼굴 확인을 취소했습니다.'));};
     window.addEventListener('study:face-locked',cancelled,{once:true});
     button.addEventListener('click',async()=>{
       if(!checkbox.checked){setPhase('DAILY_REAUTH_REQUIRED','안내를 확인한 뒤 동의해 주세요.');return;}
       button.disabled=true;
       try{
         const challenge=revoke?null:await invoke('beginDailyFaceAuth',{installationId,publicKey:keys.publicKey,enrollmentOnly:enrolling});
-        await reauthenticateFaceAccount({password:password.value,getTotpCode:()=>new Promise(done=>{
+        await reauthenticateFaceAccount({getTotpCode:()=>new Promise(done=>{
           const otp=element('input');otp.inputMode='numeric';otp.autocomplete='one-time-code';otp.setAttribute('aria-label','인증 앱의 6자리 코드');const submit=element('button','인증 코드 확인');submit.type='button';root.append(otp,submit);otp.focus();submit.addEventListener('click',()=>{if(!/^\d{6}$/.test(otp.value))return;const value=otp.value;otp.value='';otp.remove();submit.remove();done(value);},{once:false});
         })});
-        password.value='';
         if(epoch!==attempt||getAuthUser()?.uid!==uid)throw new Error('계정 또는 인증 상태가 변경되었습니다.');
         const signature=revoke?null:await signFace(keys,'daily',uid,installationId,challenge.challengeId);
         const result=revoke?{grant:null}:await invoke('completeDailyFaceAuth',{installationId,challengeId:challenge.challengeId,signature});
         window.removeEventListener('study:face-locked',cancelled);
-        description.remove();consent.remove();passwordLabel.remove();password.remove();button.remove();
+        description.remove();consent.remove();button.remove();
         resolve(result.grant?{...result.grant,serverNowMs:result.serverNowMs}:null);
-      }catch(error){password.value='';if(epoch!==attempt)return;setPhase('DAILY_REAUTH_REQUIRED',error.message||'계정을 다시 확인해 주세요.');button.disabled=false;}
+      }catch(error){if(epoch!==attempt)return;setPhase('DAILY_REAUTH_REQUIRED',error.message||'계정을 다시 확인해 주세요.');button.disabled=false;}
     });
-    (passwordAccount?password:button).focus();
+    button.focus();
   });
 }
-export async function prepareFaceSession({replace=false}={}){
+export async function prepareFaceSession({replace=false,allowUnranked=false,onCameraSelected}={}){
   if(!await authReady||!getAuthUser())throw new Error('로그인 후 이용해 주세요.');
   if(location.origin!==FACE_ORIGIN||!crypto.subtle||!globalThis.indexedDB)throw new Error('정식 HTTPS 학습 사이트와 보안 저장소를 지원하는 브라우저가 필요합니다.');
   const attempt=++epoch,uid=getAuthUser().uid;verified=false;profileReady=false;
+  const choose=async()=>{
+    rankingCheck++;setRankingVisibility(false);
+    const choice=await askFaceStudyChoice();
+    return attempt===epoch&&getAuthUser()?.uid===uid?choice:'exit';
+  };
   let installationId=await faceStore('settings','readonly','installation');
+  const existingInstallation=Boolean(installationId);
+  if(allowUnranked&&!existingInstallation){
+    const choice=await choose();
+    if(choice!=='register')return {choice};
+  }
   if(!installationId){installationId=crypto.randomUUID();await faceStore('settings','readwrite','installation',installationId);}
   const keyId=`${uid}:${installationId}`;
   let keys=await faceStore('keys','readonly',keyId);
   const status=await invoke('getFaceEnrollmentStatus',{installationId});
-  if(!status.enabled)throw new Error('얼굴 보안 키 설정이 필요합니다. 관리자에게 문의해 주세요.');
   let record=status.active?.installationId===installationId?await faceStore('profiles','readonly',faceRecordKey(uid,installationId,status.active.profileId)):null;
-  const currentProfile=value=>value?.binding?.schemaVersion===FACE_SCHEMA&&value.binding.preprocessVersion===FACE_PREPROCESS;
   const needsNewScan=Boolean(record&&!currentProfile(record));if(needsNewScan)record=null;
   const pendingId=await faceStore('settings','readonly',`${keyId}:pending`);
   const pendingRecord=pendingId?await faceStore('profiles','readonly',faceRecordKey(uid,installationId,pendingId)):null;
@@ -168,6 +232,12 @@ export async function prepareFaceSession({replace=false}={}){
   if(!record&&pending?.binding.profileId===status.active?.profileId)record=pending;
   const recovering=!replace&&Boolean(keys&&pending&&pending.binding.profileId===status.pending?.profileId&&pending.ticketId===status.pending.id);
   const enrolling=replace||(!record||!keys)&&!recovering;
+  if(allowUnranked&&existingInstallation&&(!record||!keys)){
+    const choice=await choose();
+    if(choice!=='register')return {choice};
+  }
+  if(!status.enabled)throw new Error('얼굴 보안 키 설정이 필요합니다. 관리자에게 문의해 주세요.');
+  onCameraSelected?.();
   if(enrolling)record=null;
   if(!keys){keys=await createBrowserFaceKeys();await faceStore('keys','readwrite',keyId,keys);keys=await faceStore('keys','readonly',keyId);if(!keys?.signingKey||!keys.wrappingKey)throw new Error('이 브라우저는 보안 키 저장을 지원하지 않습니다.');}
   let grant=status.grant;
@@ -229,7 +299,7 @@ export function handleFaceWorkerEvent(data){
     if(dialog&&data.direction)dialog.dataset.direction=data.direction;
     updateScanFeedback(data);
   }
-  if(data.type==='face-unlocked'){session.binding=data.binding;profileReady=true;setPhase('READY','학습 준비가 완료됐습니다.');closeDialog();window.dispatchEvent(new Event('study:face-ready'));}
+  if(data.type==='face-unlocked'){session.binding=data.binding;profileReady=true;rankingCheck++;setRankingVisibility(true);setPhase('READY','학습 준비가 완료됐습니다.');closeDialog();window.dispatchEvent(new Event('study:face-ready'));}
   if(data.type==='face-verified'&&!verified){verified=true;setPhase('VERIFIED','✓ 얼굴 확인이 완료됐어요');window.dispatchEvent(new Event('study:face-verified'));setTimeout(()=>{if(verified)closeDialog();},500);}
 }
 export async function faceStudyAuthorization(data){
@@ -242,14 +312,15 @@ export async function deleteFaceEnrollment(){
   if(!await authReady||!getAuthUser())throw new Error('로그인해 주세요.');
   lockFaceSession('얼굴 등록을 삭제하기 위해 계정을 확인합니다.');
   const uid=getAuthUser().uid,installationId=await faceStore('settings','readonly','installation')||crypto.randomUUID();
-  await invoke('getFaceEnrollmentStatus',{installationId});makeDialog();
-  await askReauthentication({enrolling:false,replace:false,uid,installationId,revoke:true});
-  await invoke('revokeFaceEnrollment',{installationId});
-  await deleteLocalFaceAccount(uid,installationId);broadcast()?.postMessage({event:'revoked',uid});lockFaceSession('얼굴 등록을 삭제했습니다.');
+  const root=makeDialog({deleting:true});root.querySelector('h2').textContent='얼굴 등록 삭제';root.querySelector('.face-subtitle').textContent='얼굴 등록을 삭제할까요? 다시 사용하려면 얼굴을 등록해야 해요.';root.querySelector('.face-steps').remove();root.querySelector('[data-face-status]').textContent='서버의 등록 정보와 이 브라우저에 저장된 얼굴 비교 정보를 삭제합니다.';
+  const cancelButton=root.querySelector('[data-face-cancel]');
+  const button=element('button','얼굴 등록 삭제','face-primary');button.type='button';root.insertBefore(button,cancelButton);
+  await new Promise(resolve=>{const stop=()=>{if(button.disabled)return;closeDialog();resolve();};cancelButton.addEventListener('click',stop);root.addEventListener('cancel',event=>{event.preventDefault();stop();});button.addEventListener('click',async()=>{button.disabled=true;cancelButton.disabled=true;try{if(getAuthUser()?.uid!==uid)throw new Error('계정이 변경되었습니다.');await invoke('revokeFaceEnrollment',{installationId});await deleteLocalFaceAccount(uid,installationId);void refreshRankingVisibility();broadcast()?.postMessage({event:'revoked',uid});lockFaceSession('얼굴 등록을 삭제했습니다.');resolve();}catch(error){button.disabled=false;cancelButton.disabled=false;root.querySelector('[data-face-status]').textContent=error.message||'삭제하지 못했습니다. 다시 시도해 주세요.';}});});
 }
-window.addEventListener('study:auth-changed',()=>{if(session&&getAuthUser()?.uid!==session.uid){broadcast()?.postMessage({event:'logout',uid:session.uid});lockFaceSession('계정이 변경되었습니다.',{remote:true});}});
+window.addEventListener('study:auth-changed',()=>{if(session&&getAuthUser()?.uid!==session.uid){broadcast()?.postMessage({event:'logout',uid:session.uid});lockFaceSession('계정이 변경되었습니다.',{remote:true});}void refreshRankingVisibility();});
+void authReady.then(()=>{if(!rankingCheck)void refreshRankingVisibility();});
 window.addEventListener('pagehide',()=>lockFaceSession('학습 화면이 닫혔습니다.'));
 window.addEventListener('study:before-logout',()=>{if(session){broadcast()?.postMessage({event:'logout',uid:session.uid});lockFaceSession('로그아웃했습니다.',{remote:true});}});
 document.addEventListener('visibilitychange',()=>{clearTimeout(hiddenTimer);if(document.hidden&&!session?.ticket)hiddenTimer=setTimeout(()=>lockFaceSession('장시간 자리를 비워 얼굴 확인을 잠갔습니다.'),300000);});
-broadcast()?.addEventListener('message',({data})=>{if(session&&data?.uid===session.uid&&(data.event!=='generation'||data.profileId!==session.binding.profileId))lockFaceSession('다른 탭에서 계정 또는 얼굴 등록이 변경되었습니다.');});
+broadcast()?.addEventListener('message',({data})=>{if(session&&data?.uid===session.uid&&(data.event!=='generation'||data.profileId!==session.binding.profileId))lockFaceSession('다른 탭에서 계정 또는 얼굴 등록이 변경되었습니다.');if(data&&data.uid===getAuthUser()?.uid&&['generation','revoked'].includes(data.event))void refreshRankingVisibility();});
 document.addEventListener('click',event=>{if(event.target.closest('[data-face-delete]'))void deleteFaceEnrollment().catch(error=>window.alert(error.message));});

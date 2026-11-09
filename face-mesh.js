@@ -1,7 +1,7 @@
 // Relative 3D inferred from RGB by MediaPipe. No measured depth or sensor APIs.
 export const MESH_POINTS=Object.freeze([33,133,362,263,168,6,1,4,98,327,49,279,50,280,101,330,118,347,123,352,116,345,117,346,119,348,54,284,67,297,109,338]);
 export const MESH_SIZE=MESH_POINTS.length*3;
-export const MESH_THRESHOLD=.5;
+export const MESH_THRESHOLD=.8;
 const dot=(a,b)=>a.reduce((sum,value,i)=>sum+value*b[i],0);
 const sub=(a,b)=>a.map((value,i)=>value-b[i]);
 const unit=a=>{const length=Math.hypot(...a);return length>1e-6?a.map(value=>value/length):null;};
